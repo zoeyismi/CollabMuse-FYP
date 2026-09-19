@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Next.js build output
+.next/
+out/
+
+# Logs and local environment
+*.log
+.env
+.env.*
+!.env.example
+
+# macOS and editor files
+.DS_Store
+.idea/
+.vscode/
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Office temporary files
+~$*
+*.docx
+*.pptx
+*.pdf
+
+# Generated previews and exports
+outputs/
+render_*/
+progress_report_assets/
+
+# Local screenshots
+site-preview/
+
+# Local design and brainstorming caches
+.superpowers/
+.ui-previews/

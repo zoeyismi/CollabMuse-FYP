@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1536" height="900" viewBox="0 0 1536 900">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#020707"/>
+      <stop offset="0.45" stop-color="#061012"/>
+      <stop offset="1" stop-color="#020606"/>
+    </linearGradient>
+    <linearGradient id="mist" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#dceff4"/>
+      <stop offset="0.5" stop-color="#9dbdc8"/>
+      <stop offset="1" stop-color="#6f98a8"/>
+    </linearGradient>
+    <linearGradient id="panelBlue" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#9ab9c4"/>
+      <stop offset="0.48" stop-color="#7fa4b2"/>
+      <stop offset="1" stop-color="#678b99"/>
+    </linearGradient>
+    <linearGradient id="whitePanel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7fbfb"/>
+      <stop offset="0.58" stop-color="#dfe8e8"/>
+      <stop offset="1" stop-color="#b9c9cb"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="24" stdDeviation="30" flood-color="#000000" flood-opacity="0.32"/>
+    </filter>
+  </defs>
+  <rect width="1536" height="900" fill="url(#bg)"/>
+  <rect width="1536" height="900" fill="url(#bg)"/>
+  <circle cx="1170" cy="178" r="340" fill="#7fa4b2" opacity="0.13"/>
+  <circle cx="240" cy="750" r="280" fill="#7fa4b2" opacity="0.08"/>
+  <g opacity="0.38" fill="#d5edf3">
+    <circle cx="18" cy="34" r="1.2"/><circle cx="74" cy="34" r="1.2"/><circle cx="130" cy="34" r="1.2"/><circle cx="186" cy="34" r="1.2"/><circle cx="242" cy="34" r="1.2"/><circle cx="298" cy="34" r="1.2"/><circle cx="354" cy="34" r="1.2"/><circle cx="410" cy="34" r="1.2"/><circle cx="466" cy="34" r="1.2"/><circle cx="522" cy="34" r="1.2"/><circle cx="578" cy="34" r="1.2"/><circle cx="634" cy="34" r="1.2"/><circle cx="690" cy="34" r="1.2"/><circle cx="746" cy="34" r="1.2"/><circle cx="802" cy="34" r="1.2"/><circle cx="858" cy="34" r="1.2"/><circle cx="914" cy="34" r="1.2"/><circle cx="970" cy="34" r="1.2"/><circle cx="1026" cy="34" r="1.2"/><circle cx="1082" cy="34" r="1.2"/><circle cx="1138" cy="34" r="1.2"/><circle cx="1194" cy="34" r="1.2"/><circle cx="1250" cy="34" r="1.2"/><circle cx="1306" cy="34" r="1.2"/><circle cx="1362" cy="34" r="1.2"/><circle cx="1418" cy="34" r="1.2"/><circle cx="1474" cy="34" r="1.2"/>
+    <circle cx="18" cy="90" r="1.2"/><circle cx="74" cy="90" r="1.2"/><circle cx="130" cy="90" r="1.2"/><circle cx="186" cy="90" r="1.2"/><circle cx="242" cy="90" r="1.2"/><circle cx="298" cy="90" r="1.2"/><circle cx="354" cy="90" r="1.2"/><circle cx="410" cy="90" r="1.2"/><circle cx="466" cy="90" r="1.2"/><circle cx="522" cy="90" r="1.2"/><circle cx="578" cy="90" r="1.2"/><circle cx="634" cy="90" r="1.2"/><circle cx="690" cy="90" r="1.2"/><circle cx="746" cy="90" r="1.2"/><circle cx="802" cy="90" r="1.2"/><circle cx="858" cy="90" r="1.2"/><circle cx="914" cy="90" r="1.2"/><circle cx="970" cy="90" r="1.2"/><circle cx="1026" cy="90" r="1.2"/><circle cx="1082" cy="90" r="1.2"/><circle cx="1138" cy="90" r="1.2"/><circle cx="1194" cy="90" r="1.2"/><circle cx="1250" cy="90" r="1.2"/><circle cx="1306" cy="90" r="1.2"/><circle cx="1362" cy="90" r="1.2"/><circle cx="1418" cy="90" r="1.2"/><circle cx="1474" cy="90" r="1.2"/>
+  </g>
+
+  <g transform="translate(92 46)">
+    <rect x="0" y="0" width="1352" height="70" rx="32" fill="#071012" opacity="0.82" stroke="#294854"/>
+    <rect x="24" y="15" width="40" height="40" rx="15" fill="url(#mist)"/>
+    <text x="80" y="42" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="850" fill="#fff">CollabMuse</text>
+    <text x="590" y="42" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" fill="#bdd2d8">Features</text>
+    <text x="692" y="42" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" fill="#bdd2d8">Workflow</text>
+    <text x="802" y="42" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" fill="#bdd2d8">Dashboard</text>
+    <rect x="1156" y="12" width="170" height="46" rx="23" fill="#fff"/>
+    <text x="1241" y="41" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="850" fill="#111820">Open workspace</text>
+  </g>
+
+  <g transform="translate(92 178)">
+    <text x="0" y="36" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="750" fill="#a9c4cd">Collaborative editing · no live audio streaming</text>
+    <text x="0" y="140" font-family="Inter, Arial, sans-serif" font-size="76" font-weight="900" fill="#fff">Real-time collaborative</text>
+    <text x="0" y="226" font-family="Inter, Arial, sans-serif" font-size="76" font-weight="900" fill="#fff">music composition.</text>
+    <text x="0" y="300" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="650" fill="#c4d4d8">Create rooms, upload audio clips, edit tracks together, chat,</text>
+    <text x="0" y="336" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="650" fill="#c4d4d8">and keep every client aligned through synchronized user actions.</text>
+    <rect x="0" y="386" width="178" height="58" rx="29" fill="#fff"/>
+    <text x="89" y="422" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="850" fill="#111820">Open dashboard</text>
+    <rect x="196" y="386" width="170" height="58" rx="29" fill="#0c1a20" stroke="#537886"/>
+    <text x="281" y="422" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="850" fill="#e8f6f9">Enter demo room</text>
+  </g>
+
+  <g transform="translate(784 210)" filter="url(#shadow)">
+    <rect x="0" y="0" width="642" height="480" rx="42" fill="url(#panelBlue)" stroke="#d8eef3" stroke-opacity="0.52"/>
+    <rect x="42" y="34" width="558" height="118" rx="28" fill="#d9edf2" fill-opacity="0.44" stroke="#fff" stroke-opacity="0.48"/>
+    <text x="70" y="82" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="750" fill="#eaf6f8">Room active</text>
+    <text x="70" y="122" font-family="Inter, Arial, sans-serif" font-size="30" font-weight="900" fill="#fff">Midnight Sketch</text>
+    <rect x="446" y="62" width="112" height="46" rx="23" fill="#ffffff"/>
+    <text x="502" y="92" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="850" fill="#18333d">events synced</text>
+    <g transform="translate(58 210)">
+      <text x="0" y="30" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="750" fill="#eaf6f8">Drums</text>
+      <text x="0" y="112" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="750" fill="#eaf6f8">Bass</text>
+      <text x="0" y="194" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="750" fill="#eaf6f8">Keys</text>
+      <rect x="118" y="0" width="440" height="58" rx="22" fill="#dbeef2" fill-opacity="0.20" stroke="#e8f6f9" stroke-opacity="0.28"/>
+      <rect x="118" y="82" width="440" height="58" rx="22" fill="#dbeef2" fill-opacity="0.20" stroke="#e8f6f9" stroke-opacity="0.28"/>
+      <rect x="118" y="164" width="440" height="58" rx="22" fill="#dbeef2" fill-opacity="0.20" stroke="#e8f6f9" stroke-opacity="0.28"/>
+      <rect x="180" y="15" width="112" height="28" rx="14" fill="#fff" opacity="0.78"/>
+      <rect x="330" y="15" width="150" height="28" rx="14" fill="#fff" opacity="0.70"/>
+      <rect x="214" y="97" width="160" height="28" rx="14" fill="#fff" opacity="0.76"/>
+      <rect x="286" y="179" width="176" height="28" rx="14" fill="#fff" opacity="0.72"/>
+    </g>
+  </g>
+
+  <g transform="translate(92 720)">
+    <text x="0" y="0" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="750" fill="#a9c4cd">Core features</text>
+    <rect x="0" y="28" width="300" height="120" rx="28" fill="url(#whitePanel)"/>
+    <rect x="328" y="28" width="300" height="120" rx="28" fill="url(#whitePanel)"/>
+    <rect x="656" y="28" width="300" height="120" rx="28" fill="url(#whitePanel)"/>
+    <rect x="984" y="28" width="300" height="120" rx="28" fill="url(#whitePanel)"/>
+    <text x="30" y="78" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="850" fill="#17252b">Rooms</text>
+    <text x="358" y="78" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="850" fill="#17252b">Clip management</text>
+    <text x="686" y="78" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="850" fill="#17252b">Event sync</text>
+    <text x="1014" y="78" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="850" fill="#17252b">Room chat</text>
+  </g>
+</svg>

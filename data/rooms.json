@@ -1,0 +1,96 @@
+{
+  "rooms": {
+    "demo": {
+      "id": "demo",
+      "title": "Always session",
+      "uploadedFileName": "always-reference.wav",
+      "events": [
+        {
+          "id": "event-upload",
+          "kind": "upload",
+          "title": "Clip uploaded",
+          "detail": "Lina added always-reference.wav",
+          "time": "11:20"
+        },
+        {
+          "id": "event-move",
+          "kind": "move",
+          "title": "Clip move synced",
+          "detail": "Ziyi moved a waveform selection",
+          "time": "11:22"
+        },
+        {
+          "id": "event-remix",
+          "kind": "remix",
+          "title": "Section marked",
+          "detail": "Yellow region marked for review",
+          "time": "11:23"
+        },
+        {
+          "id": "event-note",
+          "kind": "note",
+          "title": "Room note",
+          "detail": "Franky: keep action sync focused",
+          "time": "11:24"
+        }
+      ],
+      "createdAt": "2026-05-25T06:47:35.669Z",
+      "updatedAt": "2026-09-13T09:50:27.024Z",
+      "waveformPeaks": null,
+      "notes": [
+        {
+          "id": "note-ziyi",
+          "author": "Ziyi",
+          "message": "Marked the chorus section for the Always edit.",
+          "time": "11:20"
+        },
+        {
+          "id": "note-franky",
+          "author": "Franky",
+          "message": "The blue selection feels like the cleanest inpoint area.",
+          "time": "11:22"
+        },
+        {
+          "id": "note-lina",
+          "author": "Lina",
+          "message": "I added a soft vocal layer note for the second pass.",
+          "time": "11:24"
+        }
+      ],
+      "timelineRegions": [
+        {
+          "id": "region-move",
+          "label": "Move clip",
+          "actionLabel": "Move clip",
+          "left": 12,
+          "width": 16,
+          "color": "#b71912"
+        },
+        {
+          "id": "region-mark",
+          "label": "Mark section",
+          "actionLabel": "Mark section",
+          "left": 31,
+          "width": 9,
+          "color": "#efd84c"
+        },
+        {
+          "id": "region-sync",
+          "label": "Sync edit",
+          "actionLabel": "Sync edit",
+          "left": 44,
+          "width": 25,
+          "color": "#235fba"
+        },
+        {
+          "id": "region-extend",
+          "label": "Extend clip",
+          "actionLabel": "Extend clip",
+          "left": 78,
+          "width": 16,
+          "color": "#58e081"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1536" height="900" viewBox="0 0 1536 900">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#020707"/>
+      <stop offset="0.45" stop-color="#071012"/>
+      <stop offset="1" stop-color="#020606"/>
+    </linearGradient>
+    <linearGradient id="mist" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#dceff4"/>
+      <stop offset="0.5" stop-color="#aac9d3"/>
+      <stop offset="1" stop-color="#81a9b8"/>
+    </linearGradient>
+    <linearGradient id="bluePanel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#9ab9c4"/>
+      <stop offset="0.48" stop-color="#7fa4b2"/>
+      <stop offset="1" stop-color="#678b99"/>
+    </linearGradient>
+    <linearGradient id="whitePanel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7fbfb"/>
+      <stop offset="0.58" stop-color="#dfe8e8"/>
+      <stop offset="1" stop-color="#b9c9cb"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="24" stdDeviation="30" flood-color="#000000" flood-opacity="0.30"/>
+    </filter>
+  </defs>
+  <rect width="1536" height="900" fill="url(#bg)"/>
+  <circle cx="1180" cy="175" r="330" fill="#7fa4b2" opacity="0.14"/>
+  <circle cx="190" cy="792" r="320" fill="#7fa4b2" opacity="0.08"/>
+  <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse">
+    <circle cx="1" cy="1" r="1.05" fill="#d5edf3" opacity="0.34"/>
+  </pattern>
+  <rect width="1536" height="900" fill="url(#dots)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="32" y="34" width="1472" height="202" rx="44" fill="url(#mist)" stroke="#fff" stroke-opacity="0.58"/>
+  </g>
+  <rect x="62" y="62" width="86" height="48" rx="24" fill="#fff"/>
+  <text x="105" y="93" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="850" fill="#111820">Back</text>
+  <text x="62" y="146" font-family="Inter, Arial, sans-serif" font-size="40" font-weight="900" fill="#fff">Midnight Sketch</text>
+  <text x="62" y="188" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="750" fill="#eef8fa">Demo room online · Event sync active</text>
+  <g>
+    <circle cx="1370" cy="137" r="25" fill="#e6f6fa"/><circle cx="1408" cy="137" r="25" fill="#eef5f6"/><circle cx="1446" cy="137" r="25" fill="#c8dce0"/>
+    <text x="1370" y="144" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="850" fill="#13252b">ZZ</text>
+    <text x="1408" y="144" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="850" fill="#13252b">FC</text>
+    <text x="1446" y="144" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="850" fill="#13252b">LM</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="34" y="282" width="332" height="560" rx="34" fill="url(#whitePanel)" stroke="#fff" stroke-opacity="0.66"/>
+  </g>
+  <text x="64" y="334" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="750" fill="#78909a">Tracks</text>
+  <text x="64" y="385" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="900" fill="#17252b">Arrangement</text>
+  <g transform="translate(64 422)">
+    <rect x="0" y="0" width="272" height="108" rx="24" fill="#edf4f5" stroke="#fff" stroke-opacity="0.78"/>
+    <rect x="24" y="21" width="224" height="42" rx="18" fill="#c9dee5" stroke="#fff" stroke-opacity="0.72"/>
+    <text x="44" y="49" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="900" fill="#13252b">Drum texture</text>
+    <text x="24" y="91" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="750" fill="#60747c">2 clips synced</text>
+  </g>
+  <g transform="translate(64 552)">
+    <rect x="0" y="0" width="272" height="108" rx="24" fill="#e4eef0" stroke="#fff" stroke-opacity="0.68"/>
+    <rect x="24" y="21" width="224" height="42" rx="18" fill="#b9d4de" stroke="#fff" stroke-opacity="0.68"/>
+    <text x="44" y="49" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="900" fill="#13252b">Warm bass</text>
+    <text x="24" y="91" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="750" fill="#60747c">2 clips synced</text>
+  </g>
+  <g transform="translate(64 682)">
+    <rect x="0" y="0" width="272" height="108" rx="24" fill="#edf4f5" stroke="#fff" stroke-opacity="0.78"/>
+    <rect x="24" y="21" width="224" height="42" rx="18" fill="#c9dee5" stroke="#fff" stroke-opacity="0.72"/>
+    <text x="44" y="49" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="900" fill="#13252b">Glass keys</text>
+    <text x="24" y="91" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="750" fill="#60747c">2 clips synced</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="408" y="282" width="704" height="108" rx="34" fill="url(#bluePanel)" stroke="#d8eef3" stroke-opacity="0.48"/>
+  </g>
+  <rect x="442" y="315" width="74" height="44" rx="22" fill="#fff"/>
+  <rect x="530" y="315" width="140" height="44" rx="22" fill="#fff"/>
+  <rect x="684" y="315" width="106" height="44" rx="22" fill="#fff"/>
+  <text x="479" y="343" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="850" fill="#111820">Play</text>
+  <text x="600" y="343" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="850" fill="#111820">Upload audio</text>
+  <text x="737" y="343" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="850" fill="#111820">Add track</text>
+  <text x="820" y="344" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="800" fill="#eef8fa">92 BPM · 4/4 · Events only</text>
+
+  <g filter="url(#shadow)">
+    <rect x="408" y="416" width="704" height="426" rx="34" fill="url(#bluePanel)" stroke="#d8eef3" stroke-opacity="0.48"/>
+  </g>
+  <text x="442" y="470" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="750" fill="#eaf6f8">Timeline</text>
+  <text x="442" y="520" font-family="Inter, Arial, sans-serif" font-size="32" font-weight="900" fill="#fff">Shared event canvas</text>
+  <rect x="442" y="560" width="636" height="232" fill="#789fae" opacity="0.58"/>
+  <g stroke="#d8eef3" stroke-opacity="0.23">
+    <line x1="442" y1="614" x2="1078" y2="614"/><line x1="442" y1="668" x2="1078" y2="668"/><line x1="442" y1="722" x2="1078" y2="722"/>
+    <line x1="522" y1="560" x2="522" y2="792"/><line x1="602" y1="560" x2="602" y2="792"/><line x1="682" y1="560" x2="682" y2="792"/><line x1="762" y1="560" x2="762" y2="792"/><line x1="842" y1="560" x2="842" y2="792"/><line x1="922" y1="560" x2="922" y2="792"/><line x1="1002" y1="560" x2="1002" y2="792"/>
+  </g>
+  <g fill="#e9f5f7" fill-opacity="0.76" stroke="#fff" stroke-opacity="0.58">
+    <rect x="494" y="598" width="142" height="44" rx="18"/>
+    <rect x="676" y="598" width="118" height="44" rx="18"/>
+    <rect x="560" y="674" width="180" height="48" rx="20"/>
+    <rect x="818" y="674" width="138" height="48" rx="20"/>
+    <rect x="514" y="746" width="240" height="46" rx="18"/>
+  </g>
+  <text x="520" y="626" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="800" fill="#31515d">kick pattern</text>
+  <text x="704" y="626" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="800" fill="#31515d">rim ghost</text>
+  <text x="588" y="703" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="800" fill="#31515d">sub pulse</text>
+  <text x="846" y="703" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="800" fill="#31515d">bass lift</text>
+  <text x="542" y="775" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="800" fill="#31515d">chord shimmer</text>
+
+  <g filter="url(#shadow)">
+    <rect x="1154" y="282" width="348" height="560" rx="34" fill="url(#whitePanel)" stroke="#fff" stroke-opacity="0.66"/>
+  </g>
+  <text x="1184" y="334" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="750" fill="#78909a">Room chat</text>
+  <text x="1184" y="385" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="900" fill="#17252b">Creative notes</text>
+  <rect x="1184" y="422" width="288" height="96" rx="22" fill="#edf4f5" stroke="#fff" stroke-opacity="0.78"/>
+  <text x="1208" y="455" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="900" fill="#13252b">Ziyi</text>
+  <text x="1208" y="493" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="750" fill="#60747c">Moved the bass lift into bar 9.</text>
+  <rect x="1184" y="542" width="288" height="118" rx="22" fill="#e4eef0" stroke="#fff" stroke-opacity="0.68"/>
+  <text x="1208" y="575" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="900" fill="#13252b">Franky</text>
+  <text x="1208" y="613" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="750" fill="#60747c">Keep the prototype focused</text>
+  <text x="1208" y="638" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="750" fill="#60747c">on action sync.</text>
+  <rect x="1184" y="758" width="198" height="48" rx="24" fill="#eef5f6" stroke="#fff" stroke-opacity="0.72"/>
+  <rect x="1394" y="758" width="78" height="48" rx="24" fill="#fff"/>
+  <text x="1210" y="788" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="750" fill="#7c9198">Write a room note...</text>
+  <text x="1433" y="788" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="850" fill="#111820">Send</text>
+</svg>

@@ -1,0 +1,151 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1536" height="3600" viewBox="0 0 1536 3600">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#020707"/>
+      <stop offset="0.48" stop-color="#061012"/>
+      <stop offset="1" stop-color="#020606"/>
+    </linearGradient>
+    <linearGradient id="mist" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#dceff4"/>
+      <stop offset="0.48" stop-color="#9dbdc8"/>
+      <stop offset="1" stop-color="#6f98a8"/>
+    </linearGradient>
+    <linearGradient id="panelBlue" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#9ab9c4"/>
+      <stop offset="0.5" stop-color="#7fa4b2"/>
+      <stop offset="1" stop-color="#678b99"/>
+    </linearGradient>
+    <linearGradient id="whitePanel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7fbfb"/>
+      <stop offset="0.58" stop-color="#dfe8e8"/>
+      <stop offset="1" stop-color="#b9c9cb"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="28" stdDeviation="34" flood-color="#000000" flood-opacity="0.34"/>
+    </filter>
+    <filter id="blur">
+      <feGaussianBlur stdDeviation="28"/>
+    </filter>
+    <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="1.05" fill="#d5edf3" opacity="0.24"/>
+    </pattern>
+  </defs>
+
+  <rect width="1536" height="3600" fill="url(#bg)"/>
+  <rect width="1536" height="3600" fill="url(#dots)"/>
+
+  <!-- Section 1: clean hero -->
+  <g id="hero">
+    <circle cx="1180" cy="240" r="360" fill="#7fa4b2" opacity="0.12" filter="url(#blur)"/>
+    <circle cx="180" cy="760" r="300" fill="#7fa4b2" opacity="0.07" filter="url(#blur)"/>
+    <g transform="translate(72 52)">
+      <text x="0" y="48" font-family="Inter, Arial, sans-serif" font-size="48" font-weight="900" fill="#fff">CollabMuse</text>
+      <text x="274" y="47" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="800" fill="#8fb4c0">BETA</text>
+      <text x="906" y="42" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="850" fill="#d8edf2">Features</text>
+      <text x="1018" y="42" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="850" fill="#d8edf2">Workflow</text>
+      <rect x="1158" y="8" width="120" height="52" rx="14" fill="#091113" stroke="#263d45"/>
+      <text x="1218" y="42" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="850" fill="#fff">Sign In</text>
+      <rect x="1296" y="8" width="136" height="52" rx="14" fill="#fff"/>
+      <text x="1364" y="42" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="850" fill="#111820">Sign Up</text>
+    </g>
+    <g transform="translate(188 250)">
+      <text x="0" y="0" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="850" fill="#9fc2ce">Real-time rooms for collaborative composition</text>
+      <text x="0" y="110" font-family="Inter, Arial, sans-serif" font-size="104" font-weight="950" fill="#fff">make your music</text>
+      <text x="0" y="178" font-family="Inter, Arial, sans-serif" font-size="26" font-weight="650" fill="#c6d6da">A focused workspace for music projects, shared editing, room notes,</text>
+      <text x="0" y="218" font-family="Inter, Arial, sans-serif" font-size="26" font-weight="650" fill="#c6d6da">and event-based synchronization without raw audio streaming.</text>
+      <rect x="0" y="280" width="176" height="58" rx="29" fill="#fff"/>
+      <text x="88" y="316" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="900" fill="#111820">Open dashboard</text>
+      <rect x="198" y="280" width="158" height="58" rx="29" fill="#0b1518" stroke="#4c7481"/>
+      <text x="277" y="316" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="900" fill="#d8edf2">Demo room</text>
+    </g>
+    <g transform="translate(188 720)" opacity="0.82">
+      <rect x="0" y="0" width="1160" height="1" fill="#d8edf2" opacity="0.18"/>
+      <text x="0" y="54" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="800" fill="#7fa4b2">Scroll to arrange clips</text>
+      <rect x="182" y="41" width="260" height="12" rx="6" fill="#dceff4" opacity="0.68"/>
+      <rect x="458" y="41" width="170" height="12" rx="6" fill="#9dbdc8" opacity="0.56"/>
+      <rect x="644" y="41" width="300" height="12" rx="6" fill="#6f98a8" opacity="0.52"/>
+    </g>
+  </g>
+
+  <!-- Section 2: editor visual -->
+  <g id="editor" transform="translate(0 900)">
+    <circle cx="1200" cy="280" r="360" fill="#7fa4b2" opacity="0.12" filter="url(#blur)"/>
+    <text x="188" y="120" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="850" fill="#9fc2ce">Workspace preview</text>
+    <text x="188" y="188" font-family="Inter, Arial, sans-serif" font-size="56" font-weight="950" fill="#fff">A room that feels like a simplified DAW.</text>
+    <text x="188" y="240" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="650" fill="#c6d6da">Tracks, clips and notes are separated so the interface stays calm and readable.</text>
+    <g transform="translate(188 318)" filter="url(#shadow)">
+      <rect x="0" y="0" width="1160" height="430" rx="34" fill="url(#panelBlue)" stroke="#d8eef3" stroke-opacity="0.48"/>
+      <rect x="34" y="34" width="210" height="362" rx="26" fill="url(#whitePanel)" stroke="#fff" stroke-opacity="0.64"/>
+      <text x="62" y="86" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="900" fill="#17252b">Tracks</text>
+      <rect x="62" y="120" width="150" height="40" rx="18" fill="#c9dee5"/>
+      <rect x="62" y="188" width="150" height="40" rx="18" fill="#c9dee5"/>
+      <rect x="62" y="256" width="150" height="40" rx="18" fill="#c9dee5"/>
+      <rect x="290" y="34" width="836" height="76" rx="26" fill="#8fb4c0" opacity="0.72"/>
+      <rect x="326" y="51" width="82" height="40" rx="20" fill="#fff"/>
+      <rect x="420" y="51" width="132" height="40" rx="20" fill="#fff"/>
+      <rect x="564" y="51" width="110" height="40" rx="20" fill="#fff"/>
+      <text x="367" y="77" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="900" fill="#111820">Play</text>
+      <text x="486" y="77" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="900" fill="#111820">Upload</text>
+      <text x="619" y="77" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="900" fill="#111820">Add track</text>
+      <rect x="290" y="136" width="836" height="260" rx="26" fill="#789fae" opacity="0.66"/>
+      <g stroke="#d8eef3" stroke-opacity="0.20">
+        <line x1="326" y1="198" x2="1090" y2="198"/><line x1="326" y1="260" x2="1090" y2="260"/><line x1="326" y1="322" x2="1090" y2="322"/>
+        <line x1="420" y1="160" x2="420" y2="370"/><line x1="514" y1="160" x2="514" y2="370"/><line x1="608" y1="160" x2="608" y2="370"/><line x1="702" y1="160" x2="702" y2="370"/><line x1="796" y1="160" x2="796" y2="370"/><line x1="890" y1="160" x2="890" y2="370"/><line x1="984" y1="160" x2="984" y2="370"/>
+      </g>
+      <rect x="382" y="184" width="150" height="42" rx="18" fill="#e9f5f7" opacity="0.80"/>
+      <rect x="612" y="184" width="128" height="42" rx="18" fill="#e9f5f7" opacity="0.75"/>
+      <rect x="470" y="250" width="190" height="46" rx="19" fill="#e9f5f7" opacity="0.74"/>
+      <rect x="770" y="250" width="150" height="46" rx="19" fill="#e9f5f7" opacity="0.76"/>
+      <rect x="430" y="318" width="236" height="44" rx="18" fill="#e9f5f7" opacity="0.72"/>
+    </g>
+  </g>
+
+  <!-- Section 3: feature cards -->
+  <g id="features" transform="translate(0 1800)">
+    <text x="188" y="120" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="850" fill="#9fc2ce">Core features</text>
+    <text x="188" y="188" font-family="Inter, Arial, sans-serif" font-size="56" font-weight="950" fill="#fff">Separate tools, less visual noise.</text>
+    <text x="188" y="240" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="650" fill="#c6d6da">Each module owns one job, so the prototype feels intentional instead of crowded.</text>
+    <g transform="translate(188 330)" filter="url(#shadow)">
+      <rect x="0" y="0" width="250" height="230" rx="30" fill="url(#whitePanel)"/>
+      <rect x="302" y="0" width="250" height="230" rx="30" fill="url(#whitePanel)"/>
+      <rect x="604" y="0" width="250" height="230" rx="30" fill="url(#whitePanel)"/>
+      <rect x="906" y="0" width="250" height="230" rx="30" fill="url(#whitePanel)"/>
+      <text x="32" y="78" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="900" fill="#17252b">Rooms</text>
+      <text x="334" y="78" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="900" fill="#17252b">Clips</text>
+      <text x="636" y="78" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="900" fill="#17252b">Events</text>
+      <text x="938" y="78" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="900" fill="#17252b">Chat</text>
+      <text x="32" y="126" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="650" fill="#60747c">Create focused music</text>
+      <text x="32" y="154" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="650" fill="#60747c">collaboration rooms.</text>
+      <text x="334" y="126" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="650" fill="#60747c">Upload, name and</text>
+      <text x="334" y="154" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="650" fill="#60747c">move short audio clips.</text>
+      <text x="636" y="126" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="650" fill="#60747c">Sync user actions</text>
+      <text x="636" y="154" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="650" fill="#60747c">instead of raw audio.</text>
+      <text x="938" y="126" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="650" fill="#60747c">Keep creative notes</text>
+      <text x="938" y="154" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="650" fill="#60747c">beside the timeline.</text>
+    </g>
+  </g>
+
+  <!-- Section 4: workflow -->
+  <g id="workflow" transform="translate(0 2700)">
+    <circle cx="1120" cy="260" r="360" fill="#7fa4b2" opacity="0.12" filter="url(#blur)"/>
+    <text x="188" y="120" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="850" fill="#9fc2ce">Workflow</text>
+    <text x="188" y="188" font-family="Inter, Arial, sans-serif" font-size="56" font-weight="950" fill="#fff">A simple loop for collaborative editing.</text>
+    <g transform="translate(188 306)">
+      <line x1="0" y1="120" x2="1130" y2="120" stroke="#d8edf2" stroke-opacity="0.22" stroke-dasharray="8 12"/>
+      <g filter="url(#shadow)">
+        <rect x="0" y="0" width="320" height="240" rx="32" fill="url(#mist)"/>
+        <rect x="405" y="0" width="320" height="240" rx="32" fill="url(#mist)"/>
+        <rect x="810" y="0" width="320" height="240" rx="32" fill="url(#mist)"/>
+      </g>
+      <text x="34" y="64" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="900" fill="#fff">01</text>
+      <text x="439" y="64" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="900" fill="#fff">02</text>
+      <text x="844" y="64" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="900" fill="#fff">03</text>
+      <text x="34" y="124" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="950" fill="#fff">Create room</text>
+      <text x="439" y="124" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="950" fill="#fff">Edit clips</text>
+      <text x="844" y="124" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="950" fill="#fff">Sync actions</text>
+      <text x="34" y="174" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="650" fill="#eef8fa">Start a shared workspace.</text>
+      <text x="439" y="174" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="650" fill="#eef8fa">Move clips and rename tracks.</text>
+      <text x="844" y="174" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="650" fill="#eef8fa">Broadcast room events.</text>
+    </g>
+  </g>
+</svg>
