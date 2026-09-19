@@ -16,9 +16,10 @@ import {
   initialRoomEvents,
   initialRoomNotes,
   initialTimelineRegions,
+  initialTracks,
   roomStats,
 } from "@/lib/mock-data";
-import type { RoomEvent, RoomNote, TimelineRegion } from "@/lib/mock-data";
+import type { RoomEvent, RoomNote, TimelineRegion, Track } from "@/lib/mock-data";
 
 type RoomSocket = Socket<
   {
@@ -31,6 +32,7 @@ type RoomSocket = Socket<
       waveformPeaks: number[] | null;
       audioAvailable: boolean;
       timelineRegions: TimelineRegion[];
+      tracks: Track[];
     }) => void;
     "room:event": (event: RoomEvent) => void;
     "room:upload": (payload: {
@@ -41,6 +43,7 @@ type RoomSocket = Socket<
     }) => void;
     "room:note": (payload: { note: RoomNote; event?: RoomEvent }) => void;
     "room:timeline": (payload: { timelineRegions: TimelineRegion[]; event?: RoomEvent }) => void;
+    "room:tracks": (payload: { tracks: Track[]; event?: RoomEvent }) => void;
     "room:presence": (payload: { roomId: string; count: number }) => void;
   },
   {
@@ -59,6 +62,7 @@ type RoomSocket = Socket<
       timelineRegions: TimelineRegion[];
       event: RoomEvent;
     }) => void;
+    "room:tracks": (payload: { roomId: string; tracks: Track[]; event: RoomEvent }) => void;
   }
 >;
 
@@ -160,6 +164,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   const [uploadedAudioUrl, setUploadedAudioUrl] = useState<string | null>(null);
   const [waveformPeaks, setWaveformPeaks] = useState<number[] | null>(null);
   const [timelineRegions, setTimelineRegions] = useState<TimelineRegion[]>(initialTimelineRegions);
+  const [tracks, setTracks] = useState<Track[]>(initialTracks);
   const [syncStatus, setSyncStatus] = useState("Connecting Socket.io");
   const [shareStatus, setShareStatus] = useState("Share room");
   const [onlineCount, setOnlineCount] = useState(1);
@@ -203,6 +208,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
           waveformPeaks?: number[] | null;
           audioAvailable?: boolean;
           timelineRegions?: TimelineRegion[];
+          tracks?: Track[];
         };
         if (!active) return;
 
@@ -212,6 +218,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
         setWaveformPeaks(data.waveformPeaks ?? null);
         setUploadedAudioUrl(data.audioAvailable ? audioEndpoint : null);
         setTimelineRegions(data.timelineRegions ?? initialTimelineRegions);
+        setTracks(data.tracks ?? initialTracks);
       } catch {
         if (active) setSyncStatus("Backend offline fallback");
       }
@@ -241,6 +248,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
       setWaveformPeaks(payload.waveformPeaks ?? null);
       setUploadedAudioUrl(payload.audioAvailable ? audioEndpoint : null);
       setTimelineRegions(payload.timelineRegions ?? initialTimelineRegions);
+      setTracks(payload.tracks ?? initialTracks);
       setSyncStatus("Room state loaded");
     });
 
@@ -267,6 +275,12 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
       setTimelineRegions(syncedTimelineRegions);
       if (event) prependEvent(event);
       setSyncStatus("Timeline edit synced from another window");
+    });
+
+    socket.on("room:tracks", ({ tracks: syncedTracks, event }) => {
+      setTracks(syncedTracks);
+      if (event) prependEvent(event);
+      setSyncStatus("Track change synced from another window");
     });
 
     socket.on("room:presence", ({ roomId: presenceRoomId, count }) => {
@@ -318,6 +332,68 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
       body: JSON.stringify({ timelineRegions: nextTimelineRegions, event }),
     });
     setSyncStatus("Timeline edit saved through backend");
+  };
+
+  const publishTracksChange = (nextTracks: Track[], event: RoomEvent) => {
+    setTracks(nextTracks);
+    prependEvent(event);
+
+    if (socketRef.current?.connected) {
+      socketRef.current.emit("room:tracks", { roomId, tracks: nextTracks, event });
+      setSyncStatus("Track change broadcast through Socket.io");
+      return;
+    }
+
+    fetch(`/api/rooms/${encodeURIComponent(roomId)}/tracks`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tracks: nextTracks, event }),
+    });
+    setSyncStatus("Track change saved through backend");
+  };
+
+  const handleAddTrack = () => {
+    if (tracks.length >= 12) return;
+    const colors = ["#b71912", "#235fba", "#efd84c", "#58e081"];
+    const track: Track = {
+      id: `track-${Date.now().toString(36)}`,
+      name: `New track ${tracks.length + 1}`,
+      color: colors[tracks.length % colors.length],
+      muted: false,
+      clips: 0,
+    };
+    const event = createEvent("rename", "Track added", `${track.name} was added to ${roomTitle}.`);
+    publishTracksChange([...tracks, track], event);
+  };
+
+  const handleRenameTrack = (trackId: string, name: string) => {
+    const currentTrack = tracks.find((track) => track.id === trackId);
+    if (!currentTrack || currentTrack.name === name) return;
+    const event = createEvent("rename", "Track renamed", `${currentTrack.name} changed to ${name}.`);
+    publishTracksChange(tracks.map((track) => (track.id === trackId ? { ...track, name } : track)), event);
+  };
+
+  const handleToggleMute = (trackId: string) => {
+    const currentTrack = tracks.find((track) => track.id === trackId);
+    if (!currentTrack) return;
+    const nextMuted = !currentTrack.muted;
+    const event = createEvent(
+      "sync",
+      nextMuted ? "Track muted" : "Track unmuted",
+      `${currentTrack.name} was ${nextMuted ? "muted" : "unmuted"}.`,
+    );
+    publishTracksChange(
+      tracks.map((track) => (track.id === trackId ? { ...track, muted: nextMuted } : track)),
+      event,
+    );
+  };
+
+  const handleDeleteTrack = (trackId: string) => {
+    if (tracks.length <= 1) return;
+    const currentTrack = tracks.find((track) => track.id === trackId);
+    if (!currentTrack) return;
+    const event = createEvent("rename", "Track removed", `${currentTrack.name} was removed from the room.`);
+    publishTracksChange(tracks.filter((track) => track.id !== trackId), event);
   };
 
   const handleUpload = async (file: File) => {
@@ -435,6 +511,25 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     publishTimelineChange(getNextTimelineRegions(timelineRegions, label), event);
   };
 
+  const handleRegionsChange = (
+    nextRegions: TimelineRegion[],
+    changedRegion: TimelineRegion,
+    mode: "move" | "resize-start" | "resize-end",
+  ) => {
+    const normalizedRegions = nextRegions.map((region) => ({
+      ...region,
+      left: Math.round(region.left * 10) / 10,
+      width: Math.round(region.width * 10) / 10,
+    }));
+    const action = mode === "move" ? "moved" : "resized";
+    const event = createEvent(
+      mode === "move" ? "move" : "extend",
+      `Timeline region ${action}`,
+      `${changedRegion.label} was ${action} directly on the waveform.`,
+    );
+    publishTimelineChange(normalizedRegions, event);
+  };
+
   const handleShareRoom = async () => {
     try {
       await navigator.clipboard.writeText(window.location.href);
@@ -487,7 +582,13 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
         </header>
 
         <div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)_340px]">
-          <TrackList />
+          <TrackList
+            tracks={tracks}
+            onAddTrack={handleAddTrack}
+            onRenameTrack={handleRenameTrack}
+            onToggleMute={handleToggleMute}
+            onDeleteTrack={handleDeleteTrack}
+          />
           <div className="space-y-4">
             <ControlPanel
               uploadedFileName={uploadedFileName}
@@ -499,6 +600,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
               waveformPeaks={waveformPeaks}
               regions={timelineRegions}
               onSelectionAction={handleSelectionAction}
+              onRegionsChange={handleRegionsChange}
             />
             <EventActivity events={events} />
             <div className="grid gap-3 md:grid-cols-5">
@@ -506,7 +608,9 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
                 <GlassCard key={stat.label} subtle className="rounded-3xl p-4">
                   <stat.icon className="h-4 w-4 text-[#58e081]" />
                   <p className="mt-3 text-xs text-white/38">{stat.label}</p>
-                  <p className="mt-1 text-sm font-semibold text-white">{stat.value}</p>
+                  <p className="mt-1 text-sm font-semibold text-white">
+                    {stat.label === "Tracks" ? `${tracks.length} lanes` : stat.value}
+                  </p>
                 </GlassCard>
               ))}
             </div>

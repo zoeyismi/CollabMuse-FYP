@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { MessageCircle, MousePointer2, RadioTower, SlidersHorizontal } from "@/components/Icons";
 import { initialTimelineRegions } from "@/lib/mock-data";
 import type { TimelineRegion } from "@/lib/mock-data";
@@ -24,6 +26,19 @@ type WaveformEditorProps = {
   waveformPeaks?: number[] | null;
   regions?: TimelineRegion[];
   onSelectionAction?: (label: string) => void;
+  onRegionsChange?: (
+    regions: TimelineRegion[],
+    changedRegion: TimelineRegion,
+    mode: "move" | "resize-start" | "resize-end",
+  ) => void;
+};
+
+type ActiveDrag = {
+  regionId: string;
+  mode: "move" | "resize-start" | "resize-end";
+  startX: number;
+  initialLeft: number;
+  initialWidth: number;
 };
 
 function getBarColor(position: number, regions: TimelineRegion[]) {
@@ -51,8 +66,83 @@ export function WaveformEditor({
   waveformPeaks,
   regions = initialTimelineRegions,
   onSelectionAction,
+  onRegionsChange,
 }: WaveformEditorProps) {
   const displayBars = waveformPeaks?.length ? waveformPeaks : getDisplayBars(uploadedFileName);
+  const timelineRef = useRef<HTMLDivElement | null>(null);
+  const activeDragRef = useRef<ActiveDrag | null>(null);
+  const draftRegionsRef = useRef<TimelineRegion[]>(regions);
+  const [draftRegions, setDraftRegions] = useState<TimelineRegion[]>(regions);
+
+  useEffect(() => {
+    if (activeDragRef.current) return;
+    draftRegionsRef.current = regions;
+    setDraftRegions(regions);
+  }, [regions]);
+
+  const beginDrag = (
+    event: ReactPointerEvent<HTMLElement>,
+    region: TimelineRegion,
+    mode: ActiveDrag["mode"],
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    activeDragRef.current = {
+      regionId: region.id,
+      mode,
+      startX: event.clientX,
+      initialLeft: region.left,
+      initialWidth: region.width,
+    };
+  };
+
+  const dragRegion = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = activeDragRef.current;
+    const timeline = timelineRef.current;
+    if (!drag || !timeline) return;
+
+    const timelineWidth = timeline.getBoundingClientRect().width;
+    if (timelineWidth <= 0) return;
+    const delta = ((event.clientX - drag.startX) / timelineWidth) * 100;
+    const minWidth = 5;
+
+    const nextRegions = draftRegionsRef.current.map((region) => {
+      if (region.id !== drag.regionId) return region;
+
+      if (drag.mode === "move") {
+        return {
+          ...region,
+          left: Math.max(0, Math.min(100 - drag.initialWidth, drag.initialLeft + delta)),
+        };
+      }
+
+      if (drag.mode === "resize-start") {
+        const right = drag.initialLeft + drag.initialWidth;
+        const left = Math.max(0, Math.min(right - minWidth, drag.initialLeft + delta));
+        return { ...region, left, width: right - left };
+      }
+
+      return {
+        ...region,
+        width: Math.max(minWidth, Math.min(100 - drag.initialLeft, drag.initialWidth + delta)),
+      };
+    });
+
+    draftRegionsRef.current = nextRegions;
+    setDraftRegions(nextRegions);
+  };
+
+  const finishDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = activeDragRef.current;
+    if (!drag) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    activeDragRef.current = null;
+    const changedRegion = draftRegionsRef.current.find((region) => region.id === drag.regionId);
+    if (changedRegion) onRegionsChange?.(draftRegionsRef.current, changedRegion, drag.mode);
+  };
 
   return (
     <section
@@ -96,6 +186,7 @@ export function WaveformEditor({
       </div>
 
       <div
+        ref={timelineRef}
         className={`relative mt-5 overflow-hidden rounded-2xl border border-white/10 bg-[#071014]/62 ${
           compact ? "h-[150px]" : "h-[210px]"
         }`}
@@ -118,7 +209,7 @@ export function WaveformEditor({
                   x2={x}
                   y1={50 - lineHeight / 2}
                   y2={50 + lineHeight / 2}
-                  stroke={getBarColor(x, regions)}
+                  stroke={getBarColor(x, draftRegions)}
                   strokeWidth={0.24}
                   strokeLinecap="round"
                   opacity={x >= 39 && x <= 64 ? 0.9 : 0.72}
@@ -127,19 +218,37 @@ export function WaveformEditor({
             })}
           </svg>
         </div>
-        {regions.map((region) => (
+        {draftRegions.map((region) => (
           <button
             key={region.id}
             type="button"
-            aria-label={`Trigger ${region.label} region action`}
-            title={region.label}
-            className="absolute bottom-6 top-6 z-40 cursor-pointer rounded-xl bg-transparent focus:outline-none focus-visible:ring-1 focus-visible:ring-white/35"
+            aria-label={`Move or resize ${region.label} region`}
+            title={`Drag ${region.label}; use edge handles to resize`}
+            className="group absolute bottom-6 top-6 z-40 cursor-grab touch-none rounded-xl border border-transparent bg-transparent focus:outline-none focus-visible:ring-1 focus-visible:ring-white/35 active:cursor-grabbing"
             style={{
               left: `${region.left}%`,
               width: `${region.width}%`,
             }}
-            onClick={() => onSelectionAction?.(region.actionLabel)}
-          />
+            onPointerDown={(event) => beginDrag(event, region, "move")}
+            onPointerMove={dragRegion}
+            onPointerUp={finishDrag}
+            onPointerCancel={finishDrag}
+          >
+            <span
+              className="absolute inset-y-0 left-0 w-2 cursor-ew-resize rounded-l-xl bg-white/0 transition group-hover:bg-white/10"
+              onPointerDown={(event) => beginDrag(event, region, "resize-start")}
+              onPointerMove={dragRegion}
+              onPointerUp={finishDrag}
+              onPointerCancel={finishDrag}
+            />
+            <span
+              className="absolute inset-y-0 right-0 w-2 cursor-ew-resize rounded-r-xl bg-white/0 transition group-hover:bg-white/10"
+              onPointerDown={(event) => beginDrag(event, region, "resize-end")}
+              onPointerMove={dragRegion}
+              onPointerUp={finishDrag}
+              onPointerCancel={finishDrag}
+            />
+          </button>
         ))}
       </div>
     </section>

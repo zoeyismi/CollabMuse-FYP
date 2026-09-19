@@ -66,6 +66,12 @@ export const SlidersHorizontal = (props: IconProps) => (
 export const Plus = (props: IconProps) => (
   <BaseIcon {...props}><path d="M12 5v14" /><path d="M5 12h14" /></BaseIcon>
 );
+export const Pencil = (props: IconProps) => (
+  <BaseIcon {...props}><path d="M4 20h4l11-11-4-4L4 16v4Z" /><path d="m13.5 6.5 4 4" /></BaseIcon>
+);
+export const Trash2 = (props: IconProps) => (
+  <BaseIcon {...props}><path d="M4 7h16" /><path d="M9 7V4h6v3" /><path d="m7 7 1 13h8l1-13" /><path d="M10 11v5" /><path d="M14 11v5" /></BaseIcon>
+);
 export const Search = (props: IconProps) => (
   <BaseIcon {...props}><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></BaseIcon>
 );

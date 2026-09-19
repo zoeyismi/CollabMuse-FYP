@@ -74,6 +74,13 @@ const initialTimelineRegions = [
   { id: "region-extend", label: "Extend clip", actionLabel: "Extend clip", left: 78, width: 16, color: "#58e081" },
 ];
 
+const initialTracks = [
+  { id: "drums", name: "Percussion bed", color: "#b71912", muted: false, clips: 3 },
+  { id: "bass", name: "Warm bass", color: "#235fba", muted: false, clips: 2 },
+  { id: "keys", name: "Soft keys", color: "#efd84c", muted: false, clips: 4 },
+  { id: "vox", name: "Vocal layer", color: "#58e081", muted: true, clips: 2 },
+];
+
 const defaultRoom = {
   id: "demo",
   title: "Always session",
@@ -85,6 +92,7 @@ const defaultRoom = {
   events: initialEvents,
   notes: initialNotes,
   timelineRegions: initialTimelineRegions,
+  tracks: initialTracks,
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
 };
@@ -124,6 +132,7 @@ async function ensureRoom(roomId, roomPatch = {}) {
         audioMimeType: existing.audioMimeType ?? null,
         notes: existing.notes ?? initialNotes,
         timelineRegions: existing.timelineRegions ?? initialTimelineRegions,
+        tracks: existing.tracks ?? initialTracks,
         ...roomPatch,
         id: roomId,
         updatedAt: now,
@@ -139,6 +148,7 @@ async function ensureRoom(roomId, roomPatch = {}) {
         events: roomPatch.events ?? [],
         notes: roomPatch.notes ?? [],
         timelineRegions: roomPatch.timelineRegions ?? initialTimelineRegions,
+        tracks: roomPatch.tracks ?? initialTracks,
         createdAt: now,
         updatedAt: now,
       };
@@ -169,6 +179,10 @@ async function updateUpload(roomId, fileName, waveformPeaks = null, audioAvailab
 
 async function updateTimelineRegions(roomId, timelineRegions) {
   return ensureRoom(roomId, { timelineRegions });
+}
+
+async function updateTracks(roomId, tracks) {
+  return ensureRoom(roomId, { tracks });
 }
 
 async function readBody(req) {
@@ -247,6 +261,7 @@ async function handleApi(req, res, pathname) {
       waveformPeaks: room.waveformPeaks,
       audioAvailable: room.audioAvailable,
       timelineRegions: room.timelineRegions,
+      tracks: room.tracks ?? initialTracks,
     });
     return true;
   }
@@ -341,6 +356,27 @@ async function handleApi(req, res, pathname) {
     return true;
   }
 
+  const tracksMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/tracks$/);
+  if (tracksMatch && req.method === "GET") {
+    const room = await ensureRoom(tracksMatch[1]);
+    sendJson(res, 200, { tracks: room.tracks ?? initialTracks });
+    return true;
+  }
+
+  if (tracksMatch && req.method === "PATCH") {
+    const body = await readBody(req);
+    if (!Array.isArray(body.tracks)) {
+      sendJson(res, 400, { error: "Missing tracks" });
+      return true;
+    }
+
+    const tracks = body.tracks.slice(0, 12);
+    const room = await updateTracks(tracksMatch[1], tracks);
+    if (body.event) await appendEvent(tracksMatch[1], body.event);
+    sendJson(res, 200, { tracks: room.tracks, event: body.event });
+    return true;
+  }
+
   if (timelineMatch && req.method === "PATCH") {
     const body = await readBody(req);
     if (!Array.isArray(body.timelineRegions)) {
@@ -352,6 +388,7 @@ async function handleApi(req, res, pathname) {
     if (body.event) await appendEvent(timelineMatch[1], body.event);
     sendJson(res, 200, {
       timelineRegions: room.timelineRegions,
+      tracks: room.tracks ?? initialTracks,
       event: body.event,
       events: room.events,
     });
@@ -421,6 +458,7 @@ io.on("connection", (socket) => {
       waveformPeaks: room.waveformPeaks,
       audioAvailable: room.audioAvailable,
       timelineRegions: room.timelineRegions,
+      tracks: room.tracks ?? initialTracks,
     });
     await broadcastPresence(roomId);
   });
@@ -450,6 +488,14 @@ io.on("connection", (socket) => {
     await updateTimelineRegions(roomId, timelineRegions);
     if (event) await appendEvent(roomId, event);
     socket.to(roomId).emit("room:timeline", { timelineRegions, event });
+  });
+
+  socket.on("room:tracks", async ({ roomId = "demo", tracks, event }) => {
+    if (!Array.isArray(tracks)) return;
+    const nextTracks = tracks.slice(0, 12);
+    await updateTracks(roomId, nextTracks);
+    if (event) await appendEvent(roomId, event);
+    socket.to(roomId).emit("room:tracks", { tracks: nextTracks, event });
   });
 
   socket.on("disconnect", async () => {

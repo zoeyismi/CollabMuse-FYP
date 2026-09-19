@@ -86,12 +86,22 @@ export const mockProjects = [
   },
 ];
 
-export const tracks = [
+export type Track = {
+  id: string;
+  name: string;
+  color: string;
+  muted: boolean;
+  clips: number;
+};
+
+export const initialTracks: Track[] = [
   { id: "drums", name: "Percussion bed", color: "#b71912", muted: false, clips: 3 },
   { id: "bass", name: "Warm bass", color: "#235fba", muted: false, clips: 2 },
   { id: "keys", name: "Soft keys", color: "#efd84c", muted: false, clips: 4 },
   { id: "vox", name: "Vocal layer", color: "#58e081", muted: true, clips: 2 },
 ];
+
+export const tracks = initialTracks;
 
 export type RoomEventKind = "upload" | "move" | "rename" | "note" | "sync" | "remix" | "extend";
 
