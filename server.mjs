@@ -396,9 +396,21 @@ const io = new Server(httpServer, {
   cors: { origin: "*" },
 });
 
+async function broadcastPresence(roomId) {
+  const sockets = await io.in(roomId).fetchSockets();
+  io.to(roomId).emit("room:presence", { roomId, count: sockets.length });
+}
+
 io.on("connection", (socket) => {
   socket.on("room:join", async (roomId = "demo") => {
+    const previousRoomId = socket.data.roomId;
+    if (previousRoomId && previousRoomId !== roomId) {
+      socket.leave(previousRoomId);
+      await broadcastPresence(previousRoomId);
+    }
+
     socket.join(roomId);
+    socket.data.roomId = roomId;
     const room = await ensureRoom(roomId);
     socket.emit("room:snapshot", {
       roomId,
@@ -410,6 +422,7 @@ io.on("connection", (socket) => {
       audioAvailable: room.audioAvailable,
       timelineRegions: room.timelineRegions,
     });
+    await broadcastPresence(roomId);
   });
 
   socket.on("room:event", async ({ roomId = "demo", event }) => {
@@ -437,6 +450,11 @@ io.on("connection", (socket) => {
     await updateTimelineRegions(roomId, timelineRegions);
     if (event) await appendEvent(roomId, event);
     socket.to(roomId).emit("room:timeline", { timelineRegions, event });
+  });
+
+  socket.on("disconnect", async () => {
+    const roomId = socket.data.roomId;
+    if (roomId) await broadcastPresence(roomId);
   });
 });
 

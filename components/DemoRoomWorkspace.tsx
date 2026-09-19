@@ -41,6 +41,7 @@ type RoomSocket = Socket<
     }) => void;
     "room:note": (payload: { note: RoomNote; event?: RoomEvent }) => void;
     "room:timeline": (payload: { timelineRegions: TimelineRegion[]; event?: RoomEvent }) => void;
+    "room:presence": (payload: { roomId: string; count: number }) => void;
   },
   {
     "room:join": (roomId: string) => void;
@@ -161,6 +162,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   const [timelineRegions, setTimelineRegions] = useState<TimelineRegion[]>(initialTimelineRegions);
   const [syncStatus, setSyncStatus] = useState("Connecting Socket.io");
   const [shareStatus, setShareStatus] = useState("Share room");
+  const [onlineCount, setOnlineCount] = useState(1);
   const socketRef = useRef<RoomSocket | null>(null);
   const audioEndpoint = `/api/rooms/${encodeURIComponent(roomId)}/audio`;
 
@@ -265,6 +267,10 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
       setTimelineRegions(syncedTimelineRegions);
       if (event) prependEvent(event);
       setSyncStatus("Timeline edit synced from another window");
+    });
+
+    socket.on("room:presence", ({ roomId: presenceRoomId, count }) => {
+      if (presenceRoomId === roomId) setOnlineCount(Math.max(1, count));
     });
 
     loadRoom();
@@ -463,7 +469,9 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
             <div className="flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-3 rounded-full border border-white/12 bg-white/[0.07] px-3 py-2">
                 <CollaboratorAvatars names={["ZZ", "FC", "LM"]} />
-                <span className="pr-1 text-sm text-white/52">3 online</span>
+                <span className="pr-1 text-sm text-white/52">
+                  {onlineCount} online
+                </span>
               </div>
               <div className="rounded-full border border-white/12 bg-white/[0.07] px-4 py-2 text-sm text-white/58">
                 {syncStatus}
