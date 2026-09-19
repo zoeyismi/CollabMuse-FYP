@@ -103,6 +103,10 @@ async function writeStore(store) {
 async function ensureRoom(roomId, roomPatch = {}) {
   const store = await readStore();
   const existing = store.rooms[roomId];
+  const hasPatch = Object.keys(roomPatch).length > 0;
+
+  if (existing && !hasPatch) return existing;
+
   const now = new Date().toISOString();
 
   store.rooms[roomId] = existing
@@ -195,6 +199,7 @@ async function handleApi(req, res, pathname) {
   if (eventMatch && req.method === "GET") {
     const room = await ensureRoom(eventMatch[1]);
     sendJson(res, 200, {
+      title: room.title,
       events: room.events,
       notes: room.notes,
       uploadedFileName: room.uploadedFileName,
@@ -304,6 +309,7 @@ io.on("connection", (socket) => {
     const room = await ensureRoom(roomId);
     socket.emit("room:snapshot", {
       roomId,
+      title: room.title,
       events: room.events,
       notes: room.notes,
       uploadedFileName: room.uploadedFileName,

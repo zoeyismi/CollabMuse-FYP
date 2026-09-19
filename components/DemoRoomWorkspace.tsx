@@ -20,12 +20,11 @@ import {
 } from "@/lib/mock-data";
 import type { RoomEvent, RoomNote, TimelineRegion } from "@/lib/mock-data";
 
-const ROOM_ID = "demo";
-
 type RoomSocket = Socket<
   {
     "room:snapshot": (payload: {
       roomId: string;
+      title: string;
       events: RoomEvent[];
       notes: RoomNote[];
       uploadedFileName: string;
@@ -140,13 +139,21 @@ async function extractWaveformPeaks(file: File): Promise<number[] | null> {
   }
 }
 
-export function DemoRoomWorkspace() {
+type DemoRoomWorkspaceProps = {
+  roomId?: string;
+  initialTitle?: string;
+};
+
+export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always session" }: DemoRoomWorkspaceProps) {
+  const [roomTitle, setRoomTitle] = useState(initialTitle);
   const [events, setEvents] = useState<RoomEvent[]>(initialRoomEvents);
   const [notes, setNotes] = useState<RoomNote[]>(initialRoomNotes);
   const [uploadedFileName, setUploadedFileName] = useState<string>("always-reference.wav");
+  const [uploadedAudioUrl, setUploadedAudioUrl] = useState<string | null>(null);
   const [waveformPeaks, setWaveformPeaks] = useState<number[] | null>(null);
   const [timelineRegions, setTimelineRegions] = useState<TimelineRegion[]>(initialTimelineRegions);
   const [syncStatus, setSyncStatus] = useState("Connecting Socket.io");
+  const [shareStatus, setShareStatus] = useState("Share room");
   const socketRef = useRef<RoomSocket | null>(null);
 
   const prependEvent = useCallback((event: RoomEvent) => {
@@ -170,13 +177,13 @@ export function DemoRoomWorkspace() {
 
     async function loadRoom() {
       try {
-        await fetch("/api/rooms", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: ROOM_ID, title: "Always session" }),
-        });
+        const roomResponse = await fetch(`/api/rooms/${encodeURIComponent(roomId)}`);
+        if (roomResponse.ok) {
+          const roomData = (await roomResponse.json()) as { room?: { title?: string } };
+          if (active && roomData.room?.title) setRoomTitle(roomData.room.title);
+        }
 
-        const response = await fetch(`/api/rooms/${ROOM_ID}/events`);
+        const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/events`);
         if (!response.ok) return;
 
         const data = (await response.json()) as {
@@ -206,7 +213,7 @@ export function DemoRoomWorkspace() {
 
     socket.on("connect", () => {
       setSyncStatus("Socket.io connected");
-      socket.emit("room:join", ROOM_ID);
+      socket.emit("room:join", roomId);
     });
 
     socket.on("disconnect", () => {
@@ -214,7 +221,8 @@ export function DemoRoomWorkspace() {
     });
 
     socket.on("room:snapshot", (payload) => {
-      if (payload.roomId !== ROOM_ID) return;
+      if (payload.roomId !== roomId) return;
+      setRoomTitle(payload.title || initialTitle);
       setEvents(payload.events);
       setNotes(payload.notes ?? initialRoomNotes);
       setUploadedFileName(payload.uploadedFileName);
@@ -253,18 +261,18 @@ export function DemoRoomWorkspace() {
       socket.disconnect();
       if (socketRef.current === socket) socketRef.current = null;
     };
-  }, [prependEvent, prependNote]);
+  }, [initialTitle, prependEvent, prependNote, roomId]);
 
   const publishEvent = (event: RoomEvent) => {
     prependEvent(event);
 
     if (socketRef.current?.connected) {
-      socketRef.current.emit("room:event", { roomId: ROOM_ID, event });
+      socketRef.current.emit("room:event", { roomId, event });
       setSyncStatus("Broadcast through Socket.io");
       return;
     }
 
-    fetch(`/api/rooms/${ROOM_ID}/events`, {
+    fetch(`/api/rooms/${encodeURIComponent(roomId)}/events`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ event }),
@@ -278,7 +286,7 @@ export function DemoRoomWorkspace() {
 
     if (socketRef.current?.connected) {
       socketRef.current.emit("room:timeline", {
-        roomId: ROOM_ID,
+        roomId,
         timelineRegions: nextTimelineRegions,
         event,
       });
@@ -286,7 +294,7 @@ export function DemoRoomWorkspace() {
       return;
     }
 
-    fetch(`/api/rooms/${ROOM_ID}/timeline`, {
+    fetch(`/api/rooms/${encodeURIComponent(roomId)}/timeline`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ timelineRegions: nextTimelineRegions, event }),
@@ -297,6 +305,10 @@ export function DemoRoomWorkspace() {
   const handleUpload = async (file: File) => {
     setSyncStatus("Analyzing uploaded waveform");
     const extractedWaveformPeaks = await extractWaveformPeaks(file);
+    setUploadedAudioUrl((currentUrl) => {
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
+      return URL.createObjectURL(file);
+    });
     const event = createEvent("upload", "Audio uploaded", `Added ${file.name}`);
     setUploadedFileName(file.name);
     setWaveformPeaks(extractedWaveformPeaks);
@@ -304,7 +316,7 @@ export function DemoRoomWorkspace() {
 
     if (socketRef.current?.connected) {
       socketRef.current.emit("room:upload", {
-        roomId: ROOM_ID,
+        roomId,
         fileName: file.name,
         waveformPeaks: extractedWaveformPeaks,
         event,
@@ -313,12 +325,12 @@ export function DemoRoomWorkspace() {
       return;
     }
 
-    fetch(`/api/rooms/${ROOM_ID}`, {
+    fetch(`/api/rooms/${encodeURIComponent(roomId)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ uploadedFileName: file.name, waveformPeaks: extractedWaveformPeaks }),
     });
-    fetch(`/api/rooms/${ROOM_ID}/events`, {
+    fetch(`/api/rooms/${encodeURIComponent(roomId)}/events`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ event }),
@@ -334,12 +346,12 @@ export function DemoRoomWorkspace() {
     prependEvent(event);
 
     if (socketRef.current?.connected) {
-      socketRef.current.emit("room:note", { roomId: ROOM_ID, note, event });
+      socketRef.current.emit("room:note", { roomId, note, event });
       setSyncStatus("Room note broadcast through Socket.io");
       return;
     }
 
-    fetch(`/api/rooms/${ROOM_ID}/notes`, {
+    fetch(`/api/rooms/${encodeURIComponent(roomId)}/notes`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ note, event }),
@@ -386,6 +398,16 @@ export function DemoRoomWorkspace() {
     publishTimelineChange(getNextTimelineRegions(timelineRegions, label), event);
   };
 
+  const handleShareRoom = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setShareStatus("Link copied");
+      window.setTimeout(() => setShareStatus("Share room"), 1800);
+    } catch {
+      setShareStatus("Copy unavailable");
+    }
+  };
+
   return (
     <main className="room-shell relative min-h-screen px-4 py-4">
       <section className="mx-auto max-w-[1800px]">
@@ -404,7 +426,7 @@ export function DemoRoomWorkspace() {
                   <Circle className="h-2.5 w-2.5 fill-[#58e081] text-[#58e081]" />
                   Demo room online
                 </div>
-                <h1 className="mt-1 text-2xl font-semibold text-white">Always</h1>
+                <h1 className="mt-1 text-2xl font-semibold text-white">{roomTitle}</h1>
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-3">
@@ -416,10 +438,10 @@ export function DemoRoomWorkspace() {
                 {syncStatus}
               </div>
               <GlassButton icon={RadioTower} variant="secondary" className="py-2">
-                Event sync mock
+                Live event sync
               </GlassButton>
-              <GlassButton icon={Share2} className="py-2">
-                Share room
+              <GlassButton icon={Share2} className="py-2" onClick={handleShareRoom}>
+                {shareStatus}
               </GlassButton>
             </div>
           </div>
@@ -428,7 +450,11 @@ export function DemoRoomWorkspace() {
         <div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)_340px]">
           <TrackList />
           <div className="space-y-4">
-            <ControlPanel uploadedFileName={uploadedFileName} onAudioUpload={handleUpload} />
+            <ControlPanel
+              uploadedFileName={uploadedFileName}
+              uploadedAudioUrl={uploadedAudioUrl}
+              onAudioUpload={handleUpload}
+            />
             <Timeline
               uploadedFileName={uploadedFileName}
               waveformPeaks={waveformPeaks}

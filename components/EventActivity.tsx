@@ -25,7 +25,7 @@ export function EventActivity({ events }: EventActivityProps) {
           <h2 className="mt-1 text-lg font-semibold text-white">Recent collaboration updates</h2>
         </div>
         <p className="max-w-md text-xs leading-5 text-white/42">
-          Click a waveform action to append a mock event. Open another tab to see the local sync demo.
+          Timeline actions are saved as room events and synchronized to other open clients.
         </p>
       </div>
       <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">

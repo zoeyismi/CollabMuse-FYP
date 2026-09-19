@@ -38,7 +38,7 @@ export function TrackList() {
         ))}
       </div>
       <div className="mt-auto rounded-2xl border border-[#58e081]/30 bg-[#58e081]/14 p-4 text-xs leading-5 text-[#071014]/58">
-        Prototype note: these lanes show shared project state. A later Socket.io layer can broadcast edits as room events.
+        Timeline edits, uploads, and notes are broadcast through the room and restored from persistent history.
       </div>
     </aside>
   );
