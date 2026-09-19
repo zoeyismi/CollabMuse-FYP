@@ -12,6 +12,8 @@ const handle = app.getRequestHandler();
 
 const dataDir = path.join(process.cwd(), "data");
 const storePath = path.join(dataDir, "rooms.json");
+const uploadsDir = path.join(dataDir, "uploads");
+const maxAudioBytes = 25 * 1024 * 1024;
 
 const initialEvents = [
   {
@@ -76,6 +78,9 @@ const defaultRoom = {
   id: "demo",
   title: "Always session",
   uploadedFileName: "always-reference.wav",
+  audioAvailable: false,
+  audioStorageName: null,
+  audioMimeType: null,
   waveformPeaks: null,
   events: initialEvents,
   notes: initialNotes,
@@ -114,6 +119,9 @@ async function ensureRoom(roomId, roomPatch = {}) {
         ...existing,
         events: existing.events ?? initialEvents,
         waveformPeaks: existing.waveformPeaks ?? null,
+        audioAvailable: existing.audioAvailable ?? false,
+        audioStorageName: existing.audioStorageName ?? null,
+        audioMimeType: existing.audioMimeType ?? null,
         notes: existing.notes ?? initialNotes,
         timelineRegions: existing.timelineRegions ?? initialTimelineRegions,
         ...roomPatch,
@@ -125,6 +133,9 @@ async function ensureRoom(roomId, roomPatch = {}) {
         title: roomPatch.title ?? `${roomId} room`,
         uploadedFileName: roomPatch.uploadedFileName ?? "always-reference.wav",
         waveformPeaks: roomPatch.waveformPeaks ?? null,
+        audioAvailable: roomPatch.audioAvailable ?? false,
+        audioStorageName: roomPatch.audioStorageName ?? null,
+        audioMimeType: roomPatch.audioMimeType ?? null,
         events: roomPatch.events ?? [],
         notes: roomPatch.notes ?? [],
         timelineRegions: roomPatch.timelineRegions ?? initialTimelineRegions,
@@ -150,8 +161,10 @@ async function appendNote(roomId, note) {
   return ensureRoom(roomId, { notes });
 }
 
-async function updateUpload(roomId, fileName, waveformPeaks = null) {
-  return ensureRoom(roomId, { uploadedFileName: fileName, waveformPeaks });
+async function updateUpload(roomId, fileName, waveformPeaks = null, audioAvailable) {
+  const patch = { uploadedFileName: fileName, waveformPeaks };
+  if (typeof audioAvailable === "boolean") patch.audioAvailable = audioAvailable;
+  return ensureRoom(roomId, patch);
 }
 
 async function updateTimelineRegions(roomId, timelineRegions) {
@@ -173,6 +186,34 @@ async function readBody(req) {
     });
     req.on("error", reject);
   });
+}
+
+async function readBinaryBody(req, byteLimit = maxAudioBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let totalBytes = 0;
+
+    req.on("data", (chunk) => {
+      totalBytes += chunk.length;
+      if (totalBytes > byteLimit) {
+        reject(new Error("Audio file is too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
+function safePathSegment(value, fallback) {
+  const normalized = String(value ?? "")
+    .normalize("NFKD")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120);
+  return normalized || fallback;
 }
 
 function sendJson(res, status, payload) {
@@ -204,8 +245,60 @@ async function handleApi(req, res, pathname) {
       notes: room.notes,
       uploadedFileName: room.uploadedFileName,
       waveformPeaks: room.waveformPeaks,
+      audioAvailable: room.audioAvailable,
       timelineRegions: room.timelineRegions,
     });
+    return true;
+  }
+
+  const audioMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/audio$/);
+  if (audioMatch && req.method === "POST") {
+    const roomId = decodeURIComponent(audioMatch[1]);
+    const uploadUrl = new URL(req.url ?? pathname, `http://${req.headers.host ?? `localhost:${port}`}`);
+    const requestedName = uploadUrl.searchParams.get("name") ?? "uploaded-audio";
+    const fileName = safePathSegment(requestedName, "uploaded-audio");
+    const storageName = `${Date.now()}-${fileName}`;
+    const roomDirectory = path.join(uploadsDir, safePathSegment(roomId, "room"));
+    const audioBuffer = await readBinaryBody(req);
+
+    if (audioBuffer.length === 0) {
+      sendJson(res, 400, { error: "Audio file is empty" });
+      return true;
+    }
+
+    await mkdir(roomDirectory, { recursive: true });
+    await writeFile(path.join(roomDirectory, storageName), audioBuffer);
+    const room = await ensureRoom(roomId, {
+      uploadedFileName: requestedName.slice(0, 180),
+      audioAvailable: true,
+      audioStorageName: storageName,
+      audioMimeType: req.headers["content-type"] || "audio/mpeg",
+    });
+    sendJson(res, 201, {
+      fileName: room.uploadedFileName,
+      audioAvailable: true,
+      audioUrl: `/api/rooms/${encodeURIComponent(roomId)}/audio`,
+    });
+    return true;
+  }
+
+  if (audioMatch && req.method === "GET") {
+    const roomId = decodeURIComponent(audioMatch[1]);
+    const room = await ensureRoom(roomId);
+    if (!room.audioAvailable || !room.audioStorageName) {
+      sendJson(res, 404, { error: "No uploaded audio for this room" });
+      return true;
+    }
+
+    const roomDirectory = path.join(uploadsDir, safePathSegment(roomId, "room"));
+    const audioBuffer = await readFile(path.join(roomDirectory, room.audioStorageName));
+    res.writeHead(200, {
+      "Content-Type": room.audioMimeType || "audio/mpeg",
+      "Content-Length": audioBuffer.length,
+      "Cache-Control": "no-store",
+      "Accept-Ranges": "none",
+    });
+    res.end(audioBuffer);
     return true;
   }
 
@@ -314,6 +407,7 @@ io.on("connection", (socket) => {
       notes: room.notes,
       uploadedFileName: room.uploadedFileName,
       waveformPeaks: room.waveformPeaks,
+      audioAvailable: room.audioAvailable,
       timelineRegions: room.timelineRegions,
     });
   });
@@ -324,11 +418,11 @@ io.on("connection", (socket) => {
     socket.to(roomId).emit("room:event", event);
   });
 
-  socket.on("room:upload", async ({ roomId = "demo", fileName, waveformPeaks = null, event }) => {
+  socket.on("room:upload", async ({ roomId = "demo", fileName, waveformPeaks = null, audioAvailable, event }) => {
     if (!fileName) return;
-    await updateUpload(roomId, fileName, waveformPeaks);
+    await updateUpload(roomId, fileName, waveformPeaks, audioAvailable);
     if (event) await appendEvent(roomId, event);
-    socket.to(roomId).emit("room:upload", { fileName, waveformPeaks, event });
+    socket.to(roomId).emit("room:upload", { fileName, waveformPeaks, audioAvailable, event });
   });
 
   socket.on("room:note", async ({ roomId = "demo", note, event }) => {

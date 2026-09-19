@@ -34,6 +34,9 @@ progress_report_assets/
 # Local screenshots
 site-preview/
 
+# User-uploaded room audio
+data/uploads/
+
 # Local design and brainstorming caches
 .superpowers/
 .ui-previews/

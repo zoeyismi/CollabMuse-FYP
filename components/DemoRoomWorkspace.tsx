@@ -29,10 +29,16 @@ type RoomSocket = Socket<
       notes: RoomNote[];
       uploadedFileName: string;
       waveformPeaks: number[] | null;
+      audioAvailable: boolean;
       timelineRegions: TimelineRegion[];
     }) => void;
     "room:event": (event: RoomEvent) => void;
-    "room:upload": (payload: { fileName: string; waveformPeaks?: number[] | null; event?: RoomEvent }) => void;
+    "room:upload": (payload: {
+      fileName: string;
+      waveformPeaks?: number[] | null;
+      audioAvailable?: boolean;
+      event?: RoomEvent;
+    }) => void;
     "room:note": (payload: { note: RoomNote; event?: RoomEvent }) => void;
     "room:timeline": (payload: { timelineRegions: TimelineRegion[]; event?: RoomEvent }) => void;
   },
@@ -43,6 +49,7 @@ type RoomSocket = Socket<
       roomId: string;
       fileName: string;
       waveformPeaks: number[] | null;
+      audioAvailable: boolean;
       event: RoomEvent;
     }) => void;
     "room:note": (payload: { roomId: string; note: RoomNote; event: RoomEvent }) => void;
@@ -155,6 +162,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   const [syncStatus, setSyncStatus] = useState("Connecting Socket.io");
   const [shareStatus, setShareStatus] = useState("Share room");
   const socketRef = useRef<RoomSocket | null>(null);
+  const audioEndpoint = `/api/rooms/${encodeURIComponent(roomId)}/audio`;
 
   const prependEvent = useCallback((event: RoomEvent) => {
     setEvents((current) =>
@@ -191,6 +199,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
           notes?: RoomNote[];
           uploadedFileName: string;
           waveformPeaks?: number[] | null;
+          audioAvailable?: boolean;
           timelineRegions?: TimelineRegion[];
         };
         if (!active) return;
@@ -199,6 +208,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
         setNotes(data.notes ?? initialRoomNotes);
         setUploadedFileName(data.uploadedFileName);
         setWaveformPeaks(data.waveformPeaks ?? null);
+        setUploadedAudioUrl(data.audioAvailable ? audioEndpoint : null);
         setTimelineRegions(data.timelineRegions ?? initialTimelineRegions);
       } catch {
         if (active) setSyncStatus("Backend offline fallback");
@@ -227,6 +237,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
       setNotes(payload.notes ?? initialRoomNotes);
       setUploadedFileName(payload.uploadedFileName);
       setWaveformPeaks(payload.waveformPeaks ?? null);
+      setUploadedAudioUrl(payload.audioAvailable ? audioEndpoint : null);
       setTimelineRegions(payload.timelineRegions ?? initialTimelineRegions);
       setSyncStatus("Room state loaded");
     });
@@ -236,9 +247,10 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
       setSyncStatus("Synced from another window");
     });
 
-    socket.on("room:upload", ({ fileName, waveformPeaks: syncedWaveformPeaks, event }) => {
+    socket.on("room:upload", ({ fileName, waveformPeaks: syncedWaveformPeaks, audioAvailable, event }) => {
       setUploadedFileName(fileName);
       setWaveformPeaks(syncedWaveformPeaks ?? null);
+      if (audioAvailable) setUploadedAudioUrl(`${audioEndpoint}?v=${event?.id ?? Date.now()}`);
       if (event) prependEvent(event);
       setSyncStatus("Upload synced from another window");
     });
@@ -261,7 +273,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
       socket.disconnect();
       if (socketRef.current === socket) socketRef.current = null;
     };
-  }, [initialTitle, prependEvent, prependNote, roomId]);
+  }, [audioEndpoint, initialTitle, prependEvent, prependNote, roomId]);
 
   const publishEvent = (event: RoomEvent) => {
     prependEvent(event);
@@ -305,11 +317,25 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   const handleUpload = async (file: File) => {
     setSyncStatus("Analyzing uploaded waveform");
     const extractedWaveformPeaks = await extractWaveformPeaks(file);
-    setUploadedAudioUrl((currentUrl) => {
-      if (currentUrl) URL.revokeObjectURL(currentUrl);
-      return URL.createObjectURL(file);
-    });
     const event = createEvent("upload", "Audio uploaded", `Added ${file.name}`);
+    let audioAvailable = false;
+
+    try {
+      const uploadResponse = await fetch(`${audioEndpoint}?name=${encodeURIComponent(file.name)}`, {
+        method: "POST",
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+        body: file,
+      });
+      if (!uploadResponse.ok) throw new Error("Audio upload failed");
+      audioAvailable = true;
+      setUploadedAudioUrl(`${audioEndpoint}?v=${event.id}`);
+    } catch {
+      setUploadedAudioUrl((currentUrl) => {
+        if (currentUrl?.startsWith("blob:")) URL.revokeObjectURL(currentUrl);
+        return URL.createObjectURL(file);
+      });
+    }
+
     setUploadedFileName(file.name);
     setWaveformPeaks(extractedWaveformPeaks);
     prependEvent(event);
@@ -319,6 +345,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
         roomId,
         fileName: file.name,
         waveformPeaks: extractedWaveformPeaks,
+        audioAvailable,
         event,
       });
       setSyncStatus("Upload broadcast through Socket.io");
@@ -328,7 +355,11 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     fetch(`/api/rooms/${encodeURIComponent(roomId)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ uploadedFileName: file.name, waveformPeaks: extractedWaveformPeaks }),
+      body: JSON.stringify({
+        uploadedFileName: file.name,
+        waveformPeaks: extractedWaveformPeaks,
+        audioAvailable,
+      }),
     });
     fetch(`/api/rooms/${encodeURIComponent(roomId)}/events`, {
       method: "POST",
