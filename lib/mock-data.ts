@@ -129,6 +129,23 @@ export type TimelineRegion = {
   color: string;
 };
 
+export type CompositionNote = {
+  pitch: string;
+  beats: number;
+  velocity: number;
+};
+
+export type MusicComposition = {
+  id: string;
+  title: string;
+  key: string;
+  tempo: number;
+  style: string;
+  explanation: string;
+  notes: CompositionNote[];
+  provider: "openai" | "local";
+};
+
 export const initialRoomEvents: RoomEvent[] = [
   {
     id: "event-upload",

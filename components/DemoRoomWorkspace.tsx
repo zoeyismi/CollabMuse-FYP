@@ -10,6 +10,7 @@ import { ControlPanel } from "@/components/ControlPanel";
 import { EventActivity } from "@/components/EventActivity";
 import { GlassButton } from "@/components/GlassButton";
 import { GlassCard } from "@/components/GlassCard";
+import { MusicAgentPanel } from "@/components/MusicAgentPanel";
 import { Timeline } from "@/components/Timeline";
 import { TrackList } from "@/components/TrackList";
 import {
@@ -19,7 +20,7 @@ import {
   initialTracks,
   roomStats,
 } from "@/lib/mock-data";
-import type { RoomEvent, RoomNote, TimelineRegion, Track } from "@/lib/mock-data";
+import type { MusicComposition, RoomEvent, RoomNote, TimelineRegion, Track } from "@/lib/mock-data";
 
 type RoomSocket = Socket<
   {
@@ -33,6 +34,7 @@ type RoomSocket = Socket<
       audioAvailable: boolean;
       timelineRegions: TimelineRegion[];
       tracks: Track[];
+      composition: MusicComposition | null;
     }) => void;
     "room:event": (event: RoomEvent) => void;
     "room:upload": (payload: {
@@ -44,6 +46,7 @@ type RoomSocket = Socket<
     "room:note": (payload: { note: RoomNote; event?: RoomEvent }) => void;
     "room:timeline": (payload: { timelineRegions: TimelineRegion[]; event?: RoomEvent }) => void;
     "room:tracks": (payload: { tracks: Track[]; event?: RoomEvent }) => void;
+    "room:composition": (payload: { composition: MusicComposition; event?: RoomEvent }) => void;
     "room:presence": (payload: { roomId: string; count: number }) => void;
   },
   {
@@ -63,6 +66,11 @@ type RoomSocket = Socket<
       event: RoomEvent;
     }) => void;
     "room:tracks": (payload: { roomId: string; tracks: Track[]; event: RoomEvent }) => void;
+    "room:composition": (payload: {
+      roomId: string;
+      composition: MusicComposition;
+      event: RoomEvent;
+    }) => void;
   }
 >;
 
@@ -165,6 +173,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   const [waveformPeaks, setWaveformPeaks] = useState<number[] | null>(null);
   const [timelineRegions, setTimelineRegions] = useState<TimelineRegion[]>(initialTimelineRegions);
   const [tracks, setTracks] = useState<Track[]>(initialTracks);
+  const [composition, setComposition] = useState<MusicComposition | null>(null);
   const [syncStatus, setSyncStatus] = useState("Connecting Socket.io");
   const [shareStatus, setShareStatus] = useState("Share room");
   const [onlineCount, setOnlineCount] = useState(1);
@@ -209,6 +218,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
           audioAvailable?: boolean;
           timelineRegions?: TimelineRegion[];
           tracks?: Track[];
+          composition?: MusicComposition | null;
         };
         if (!active) return;
 
@@ -219,6 +229,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
         setUploadedAudioUrl(data.audioAvailable ? audioEndpoint : null);
         setTimelineRegions(data.timelineRegions ?? initialTimelineRegions);
         setTracks(data.tracks ?? initialTracks);
+        setComposition(data.composition ?? null);
       } catch {
         if (active) setSyncStatus("Backend offline fallback");
       }
@@ -249,6 +260,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
       setUploadedAudioUrl(payload.audioAvailable ? audioEndpoint : null);
       setTimelineRegions(payload.timelineRegions ?? initialTimelineRegions);
       setTracks(payload.tracks ?? initialTracks);
+      setComposition(payload.composition ?? null);
       setSyncStatus("Room state loaded");
     });
 
@@ -281,6 +293,12 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
       setTracks(syncedTracks);
       if (event) prependEvent(event);
       setSyncStatus("Track change synced from another window");
+    });
+
+    socket.on("room:composition", ({ composition: syncedComposition, event }) => {
+      setComposition(syncedComposition);
+      if (event) prependEvent(event);
+      setSyncStatus("AI melody synced from another window");
     });
 
     socket.on("room:presence", ({ roomId: presenceRoomId, count }) => {
@@ -394,6 +412,33 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     if (!currentTrack) return;
     const event = createEvent("rename", "Track removed", `${currentTrack.name} was removed from the room.`);
     publishTracksChange(tracks.filter((track) => track.id !== trackId), event);
+  };
+
+  const handleCompositionGenerated = (nextComposition: MusicComposition) => {
+    const event = createEvent(
+      "remix",
+      "Music Copilot melody created",
+      `${nextComposition.title} · ${nextComposition.key} · ${nextComposition.tempo} BPM`,
+    );
+    setComposition(nextComposition);
+    prependEvent(event);
+
+    if (socketRef.current?.connected) {
+      socketRef.current.emit("room:composition", {
+        roomId,
+        composition: nextComposition,
+        event,
+      });
+      setSyncStatus("AI melody broadcast through Socket.io");
+      return;
+    }
+
+    fetch(`/api/rooms/${encodeURIComponent(roomId)}/events`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event }),
+    });
+    setSyncStatus("AI melody saved through backend");
   };
 
   const handleUpload = async (file: File) => {
@@ -601,6 +646,11 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
               regions={timelineRegions}
               onSelectionAction={handleSelectionAction}
               onRegionsChange={handleRegionsChange}
+            />
+            <MusicAgentPanel
+              roomId={roomId}
+              composition={composition}
+              onCompositionGenerated={handleCompositionGenerated}
             />
             <EventActivity events={events} />
             <div className="grid gap-3 md:grid-cols-5">

@@ -14,6 +14,13 @@ const dataDir = path.join(process.cwd(), "data");
 const storePath = path.join(dataDir, "rooms.json");
 const uploadsDir = path.join(dataDir, "uploads");
 const maxAudioBytes = 25 * 1024 * 1024;
+const compositionPitches = [
+  "C3", "C#3", "D3", "D#3", "E3", "F3", "F#3", "G3", "G#3", "A3", "A#3", "B3",
+  "C4", "C#4", "D4", "D#4", "E4", "F4", "F#4", "G4", "G#4", "A4", "A#4", "B4",
+  "C5", "C#5", "D5", "D#5", "E5", "F5", "F#5", "G5", "G#5", "A5", "A#5", "B5",
+];
+const majorScaleIntervals = [0, 2, 4, 5, 7, 9, 11];
+const minorScaleIntervals = [0, 2, 3, 5, 7, 8, 10];
 
 const initialEvents = [
   {
@@ -93,6 +100,7 @@ const defaultRoom = {
   notes: initialNotes,
   timelineRegions: initialTimelineRegions,
   tracks: initialTracks,
+  composition: null,
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
 };
@@ -133,6 +141,7 @@ async function ensureRoom(roomId, roomPatch = {}) {
         notes: existing.notes ?? initialNotes,
         timelineRegions: existing.timelineRegions ?? initialTimelineRegions,
         tracks: existing.tracks ?? initialTracks,
+        composition: existing.composition ?? null,
         ...roomPatch,
         id: roomId,
         updatedAt: now,
@@ -149,6 +158,7 @@ async function ensureRoom(roomId, roomPatch = {}) {
         notes: roomPatch.notes ?? [],
         timelineRegions: roomPatch.timelineRegions ?? initialTimelineRegions,
         tracks: roomPatch.tracks ?? initialTracks,
+        composition: roomPatch.composition ?? null,
         createdAt: now,
         updatedAt: now,
       };
@@ -183,6 +193,121 @@ async function updateTimelineRegions(roomId, timelineRegions) {
 
 async function updateTracks(roomId, tracks) {
   return ensureRoom(roomId, { tracks });
+}
+
+async function updateComposition(roomId, composition) {
+  return ensureRoom(roomId, { composition });
+}
+
+function stringSeed(value) {
+  return Array.from(value).reduce((seed, character) => ((seed * 31) + character.charCodeAt(0)) >>> 0, 17);
+}
+
+function generateLocalComposition({ prompt = "", key = "C", mood = "warm", style = "R&B", bars = 2 }) {
+  const noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+  const rootIndex = Math.max(0, noteNames.indexOf(key));
+  const isMinor = /minor|sad|dark|moody/i.test(`${mood} ${prompt}`);
+  const intervals = isMinor ? minorScaleIntervals : majorScaleIntervals;
+  let seed = stringSeed(`${prompt}-${key}-${mood}-${style}-${bars}`);
+  const count = Math.max(8, Math.min(24, Number(bars) * 8));
+  const durationPattern = [0.5, 0.5, 1, 0.5, 0.5, 1, 1, 1];
+  const notes = Array.from({ length: count }, (_, index) => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    const degree = (seed + index * 2) % intervals.length;
+    const semitone = rootIndex + intervals[degree];
+    const octave = 4 + Math.floor(semitone / 12) + (index % 8 === 7 ? 1 : 0);
+    const pitch = `${noteNames[semitone % 12]}${Math.min(5, octave)}`;
+    return {
+      pitch,
+      beats: durationPattern[index % durationPattern.length],
+      velocity: Math.round((0.58 + ((seed % 30) / 100)) * 100) / 100,
+    };
+  });
+
+  return {
+    id: `composition-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    title: `${mood.charAt(0).toUpperCase()}${mood.slice(1)} ${style} idea`,
+    key: `${key} ${isMinor ? "minor" : "major"}`,
+    tempo: /slow|calm|dream/i.test(mood) ? 72 : /energetic|bright|dance/i.test(mood) ? 112 : 88,
+    style,
+    explanation: `A ${count}-note ${style} motif shaped around a ${mood} ${key} ${isMinor ? "minor" : "major"} scale.`,
+    notes,
+    provider: "local",
+  };
+}
+
+function extractResponseText(response) {
+  if (typeof response.output_text === "string") return response.output_text;
+  for (const item of response.output ?? []) {
+    for (const content of item.content ?? []) {
+      if (content.type === "output_text" && typeof content.text === "string") return content.text;
+    }
+  }
+  return null;
+}
+
+async function generateAiComposition(input) {
+  if (!process.env.OPENAI_API_KEY) return generateLocalComposition(input);
+
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: process.env.OPENAI_MODEL ?? "gpt-5-mini",
+      store: false,
+      max_output_tokens: 1200,
+      instructions: "You are a music composition copilot. Create an original, short, playable monophonic melody. Return only data matching the schema. Avoid copying any existing song or artist melody.",
+      input: `Create ${input.bars ?? 2} bars in ${input.key ?? "C"}, style ${input.style ?? "R&B"}, mood ${input.mood ?? "warm"}. Creative direction: ${input.prompt ?? "original melodic idea"}`,
+      text: {
+        format: {
+          type: "json_schema",
+          name: "music_composition",
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["title", "key", "tempo", "style", "explanation", "notes"],
+            properties: {
+              title: { type: "string" },
+              key: { type: "string" },
+              tempo: { type: "integer", minimum: 50, maximum: 160 },
+              style: { type: "string" },
+              explanation: { type: "string" },
+              notes: {
+                type: "array",
+                minItems: 8,
+                maxItems: 32,
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["pitch", "beats", "velocity"],
+                  properties: {
+                    pitch: { type: "string", enum: compositionPitches },
+                    beats: { type: "number", enum: [0.25, 0.5, 1, 2] },
+                    velocity: { type: "number", minimum: 0.3, maximum: 1 },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    }),
+  });
+
+  if (!response.ok) throw new Error(`OpenAI request failed with status ${response.status}`);
+  const responseData = await response.json();
+  const outputText = extractResponseText(responseData);
+  if (!outputText) throw new Error("OpenAI response did not contain composition data");
+  const composition = JSON.parse(outputText);
+  return {
+    ...composition,
+    id: `composition-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    provider: "openai",
+  };
 }
 
 async function readBody(req) {
@@ -262,6 +387,7 @@ async function handleApi(req, res, pathname) {
       audioAvailable: room.audioAvailable,
       timelineRegions: room.timelineRegions,
       tracks: room.tracks ?? initialTracks,
+      composition: room.composition ?? null,
     });
     return true;
   }
@@ -363,6 +489,32 @@ async function handleApi(req, res, pathname) {
     return true;
   }
 
+  const composeMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/compose$/);
+  if (composeMatch && req.method === "POST") {
+    const body = await readBody(req);
+    const input = {
+      prompt: String(body.prompt ?? "").slice(0, 500),
+      key: String(body.key ?? "C").slice(0, 3),
+      mood: String(body.mood ?? "warm").slice(0, 40),
+      style: String(body.style ?? "R&B").slice(0, 40),
+      bars: Math.max(1, Math.min(4, Number(body.bars) || 2)),
+    };
+
+    let composition;
+    let fallbackReason = null;
+    try {
+      composition = await generateAiComposition(input);
+    } catch (error) {
+      console.error("AI composition fallback:", error.message);
+      composition = generateLocalComposition(input);
+      fallbackReason = "AI service unavailable; generated locally";
+    }
+
+    await updateComposition(composeMatch[1], composition);
+    sendJson(res, 200, { composition, fallbackReason });
+    return true;
+  }
+
   if (tracksMatch && req.method === "PATCH") {
     const body = await readBody(req);
     if (!Array.isArray(body.tracks)) {
@@ -389,6 +541,7 @@ async function handleApi(req, res, pathname) {
     sendJson(res, 200, {
       timelineRegions: room.timelineRegions,
       tracks: room.tracks ?? initialTracks,
+      composition: room.composition ?? null,
       event: body.event,
       events: room.events,
     });
@@ -459,6 +612,7 @@ io.on("connection", (socket) => {
       audioAvailable: room.audioAvailable,
       timelineRegions: room.timelineRegions,
       tracks: room.tracks ?? initialTracks,
+      composition: room.composition ?? null,
     });
     await broadcastPresence(roomId);
   });
@@ -496,6 +650,13 @@ io.on("connection", (socket) => {
     await updateTracks(roomId, nextTracks);
     if (event) await appendEvent(roomId, event);
     socket.to(roomId).emit("room:tracks", { tracks: nextTracks, event });
+  });
+
+  socket.on("room:composition", async ({ roomId = "demo", composition, event }) => {
+    if (!composition || !Array.isArray(composition.notes)) return;
+    await updateComposition(roomId, composition);
+    if (event) await appendEvent(roomId, event);
+    socket.to(roomId).emit("room:composition", { composition, event });
   });
 
   socket.on("disconnect", async () => {
