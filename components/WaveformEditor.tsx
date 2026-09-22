@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { MessageCircle, MousePointer2, RadioTower, SlidersHorizontal } from "@/components/Icons";
 import { initialTimelineRegions } from "@/lib/mock-data";
-import type { TimelineRegion } from "@/lib/mock-data";
+import type { RoomNote, TimelineRegion } from "@/lib/mock-data";
 
 const bars = [
   18, 30, 42, 28, 52, 36, 24, 34, 46, 22, 28, 40, 33, 50, 26, 20, 38, 44, 24, 30, 54, 36, 28, 46,
@@ -25,6 +25,7 @@ type WaveformEditorProps = {
   uploadedFileName?: string;
   waveformPeaks?: number[] | null;
   regions?: TimelineRegion[];
+  notes?: RoomNote[];
   onSelectionAction?: (label: string) => void;
   onRegionsChange?: (
     regions: TimelineRegion[],
@@ -65,6 +66,7 @@ export function WaveformEditor({
   uploadedFileName = "always-reference.wav",
   waveformPeaks,
   regions = initialTimelineRegions,
+  notes = [],
   onSelectionAction,
   onRegionsChange,
 }: WaveformEditorProps) {
@@ -250,6 +252,24 @@ export function WaveformEditor({
             />
           </button>
         ))}
+        {notes
+          .filter((note) => typeof note.position === "number")
+          .map((note, index) => (
+            <span
+              key={note.id}
+              className="group/note absolute top-3 z-50 -translate-x-1/2"
+              style={{ left: `${note.position}%` }}
+            >
+              <span
+                className="block h-3 w-3 rounded-full border-2 border-[#071014] shadow-[0_0_0_2px_rgba(255,255,255,0.55)]"
+                style={{ background: ["#b71912", "#235fba", "#efd84c", "#58e081"][index % 4] }}
+              />
+              <span className="absolute left-1/2 top-4 hidden w-48 -translate-x-1/2 rounded-xl border border-white/12 bg-[#10171b]/95 p-3 text-left text-[11px] leading-4 text-white/70 shadow-xl group-hover/note:block">
+                <strong className="mb-1 block text-white">{note.author}</strong>
+                {note.message}
+              </span>
+            </span>
+          ))}
       </div>
     </section>
   );

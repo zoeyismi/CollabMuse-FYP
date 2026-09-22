@@ -8,6 +8,8 @@ type MusicAgentPanelProps = {
   roomId: string;
   composition: MusicComposition | null;
   onCompositionGenerated: (composition: MusicComposition) => void;
+  onAddToRoom: (composition: MusicComposition) => void;
+  isAddedToRoom?: boolean;
 };
 
 const keyboardNotes = ["C4", "D4", "E4", "F4", "G4", "A4", "B4", "C5"];
@@ -33,7 +35,13 @@ function noteFrequency(pitch: string) {
   return 440 * 2 ** ((midi - 69) / 12);
 }
 
-export function MusicAgentPanel({ roomId, composition, onCompositionGenerated }: MusicAgentPanelProps) {
+export function MusicAgentPanel({
+  roomId,
+  composition,
+  onCompositionGenerated,
+  onAddToRoom,
+  isAddedToRoom = false,
+}: MusicAgentPanelProps) {
   const [prompt, setPrompt] = useState("A warm late-night melody with a gentle lift at the end");
   const [musicKey, setMusicKey] = useState("C");
   const [mood, setMood] = useState("warm");
@@ -245,6 +253,14 @@ export function MusicAgentPanel({ roomId, composition, onCompositionGenerated }:
                     <span key={`${note.pitch}-${index}`} className="rounded-md bg-white/[0.07] px-1.5 py-1 text-[9px] text-white/45">{note.pitch}</span>
                   ))}
                 </div>
+                <button
+                  type="button"
+                  disabled={isAddedToRoom}
+                  onClick={() => onAddToRoom(composition)}
+                  className="mt-3 w-full rounded-full border border-[#58e081]/28 bg-[#58e081]/12 px-4 py-2 text-xs font-semibold text-[#79ef9b] transition hover:bg-[#58e081]/18 disabled:cursor-default disabled:border-white/8 disabled:bg-white/[0.04] disabled:text-white/28"
+                >
+                  {isAddedToRoom ? "Added to room" : "Add melody to room"}
+                </button>
               </>
             ) : (
               <div className="flex items-center gap-2 text-xs text-white/30">

@@ -36,6 +36,7 @@ site-preview/
 
 # User-uploaded room audio
 data/uploads/
+data/auth.json
 
 # Local design and brainstorming caches
 .superpowers/

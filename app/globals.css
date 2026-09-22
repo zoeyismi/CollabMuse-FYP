@@ -66,6 +66,58 @@ input {
   background: rgba(35, 95, 186, 0.38);
 }
 
+.auth-page {
+  background:
+    linear-gradient(135deg, rgba(217, 228, 232, 0.94), rgba(177, 198, 211, 0.96) 48%, rgba(129, 158, 179, 0.94)),
+    #b6cad6;
+}
+
+.auth-page::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.16), transparent 35%, rgba(72, 101, 121, 0.08)),
+    radial-gradient(circle at 18% 22%, rgba(255, 255, 255, 0.38), transparent 32rem);
+  opacity: 0.85;
+}
+
+.auth-page > * {
+  position: relative;
+  z-index: 1;
+}
+
+.auth-field {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  border: 1px solid rgba(20, 32, 42, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.34);
+  padding: 0.8rem 1rem;
+  color: rgba(20, 32, 42, 0.46);
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.auth-field:focus-within {
+  border-color: rgba(20, 32, 42, 0.3);
+  background: rgba(255, 255, 255, 0.48);
+}
+
+.auth-field input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #14202a;
+}
+
+.auth-field input::placeholder {
+  color: rgba(20, 32, 42, 0.4);
+}
+
 .glass-surface {
   border: 1px solid rgba(235, 244, 245, 0.14);
   background: linear-gradient(145deg, rgba(255, 255, 255, 0.1), rgba(9, 14, 18, 0.5));

@@ -84,6 +84,11 @@ export function TrackList({
                   <p className="truncate text-sm font-medium text-[#071014]">{track.name}</p>
                 )}
                 <p className="text-xs text-[#071014]/45">{track.clips} clips synced</p>
+                {track.source === "ai" ? (
+                  <span className="mt-1 inline-flex rounded-full bg-[#235fba]/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#235fba]">
+                    AI melody
+                  </span>
+                ) : null}
               </div>
               <div className="flex shrink-0 items-center gap-1">
                 <button

@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import next from "next";
@@ -12,8 +13,10 @@ const handle = app.getRequestHandler();
 
 const dataDir = path.join(process.cwd(), "data");
 const storePath = path.join(dataDir, "rooms.json");
+const authStorePath = path.join(dataDir, "auth.json");
 const uploadsDir = path.join(dataDir, "uploads");
 const maxAudioBytes = 25 * 1024 * 1024;
+const sessionMaxAgeSeconds = 60 * 60 * 24 * 14;
 const compositionPitches = [
   "C3", "C#3", "D3", "D#3", "E3", "F3", "F#3", "G3", "G#3", "A3", "A#3", "B3",
   "C4", "C#4", "D4", "D#4", "E4", "F4", "F#4", "G4", "G#4", "A4", "A#4", "B4",
@@ -59,18 +62,21 @@ const initialNotes = [
     author: "Ziyi",
     message: "Marked the chorus section for the Always edit.",
     time: "11:20",
+    position: 28,
   },
   {
     id: "note-franky",
     author: "Franky",
     message: "The blue selection feels like the cleanest inpoint area.",
     time: "11:22",
+    position: 52,
   },
   {
     id: "note-lina",
     author: "Lina",
     message: "I added a soft vocal layer note for the second pass.",
     time: "11:24",
+    position: 76,
   },
 ];
 
@@ -119,6 +125,72 @@ async function readStore() {
 async function writeStore(store) {
   await mkdir(dataDir, { recursive: true });
   await writeFile(storePath, JSON.stringify(store, null, 2));
+}
+
+async function readAuthStore() {
+  try {
+    return JSON.parse(await readFile(authStorePath, "utf8"));
+  } catch {
+    const initialStore = { users: [], sessions: {} };
+    await writeAuthStore(initialStore);
+    return initialStore;
+  }
+}
+
+async function writeAuthStore(store) {
+  await mkdir(dataDir, { recursive: true });
+  await writeFile(authStorePath, JSON.stringify(store, null, 2));
+}
+
+function normalizeEmail(value) {
+  return String(value ?? "").trim().toLowerCase().slice(0, 180);
+}
+
+function publicUser(user) {
+  return { id: user.id, name: user.name, email: user.email, createdAt: user.createdAt };
+}
+
+function parseCookies(req) {
+  return Object.fromEntries(
+    String(req.headers.cookie ?? "")
+      .split(";")
+      .map((part) => part.trim().split("="))
+      .filter(([key]) => key)
+      .map(([key, ...value]) => [key, decodeURIComponent(value.join("="))]),
+  );
+}
+
+async function getSessionUser(req) {
+  const token = parseCookies(req).collabmuse_session;
+  if (!token) return null;
+  const store = await readAuthStore();
+  const session = store.sessions[token];
+  if (!session || Date.parse(session.expiresAt) <= Date.now()) return null;
+  return store.users.find((user) => user.id === session.userId) ?? null;
+}
+
+async function createSession(res, userId) {
+  const token = randomBytes(32).toString("hex");
+  const store = await readAuthStore();
+  store.sessions[token] = {
+    userId,
+    expiresAt: new Date(Date.now() + sessionMaxAgeSeconds * 1000).toISOString(),
+  };
+  await writeAuthStore(store);
+  res.setHeader(
+    "Set-Cookie",
+    `collabmuse_session=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${sessionMaxAgeSeconds}`,
+  );
+}
+
+async function clearSession(req, res) {
+  const token = parseCookies(req).collabmuse_session;
+  if (token) {
+    const store = await readAuthStore();
+    delete store.sessions[token];
+    await writeAuthStore(store);
+  }
+  res.setHeader("Set-Cookie", "collabmuse_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0");
 }
 
 async function ensureRoom(roomId, roomPatch = {}) {
@@ -361,6 +433,64 @@ function sendJson(res, status, payload) {
 }
 
 async function handleApi(req, res, pathname) {
+  if (pathname === "/api/auth/me" && req.method === "GET") {
+    const user = await getSessionUser(req);
+    sendJson(res, 200, { user: user ? publicUser(user) : null });
+    return true;
+  }
+
+  if (pathname === "/api/auth/register" && req.method === "POST") {
+    const body = await readBody(req);
+    const name = String(body.name ?? "").trim().slice(0, 60);
+    const email = normalizeEmail(body.email);
+    const password = String(body.password ?? "");
+    if (name.length < 2 || !email.includes("@") || password.length < 8) {
+      sendJson(res, 400, { error: "Use a name, valid email, and password of at least 8 characters" });
+      return true;
+    }
+    const store = await readAuthStore();
+    if (store.users.some((user) => user.email === email)) {
+      sendJson(res, 409, { error: "An account already exists for this email" });
+      return true;
+    }
+    const salt = randomBytes(16).toString("hex");
+    const user = {
+      id: `user-${randomBytes(8).toString("hex")}`,
+      name,
+      email,
+      salt,
+      passwordHash: scryptSync(password, salt, 64).toString("hex"),
+      createdAt: new Date().toISOString(),
+    };
+    store.users.push(user);
+    await writeAuthStore(store);
+    await createSession(res, user.id);
+    sendJson(res, 201, { user: publicUser(user) });
+    return true;
+  }
+
+  if (pathname === "/api/auth/login" && req.method === "POST") {
+    const body = await readBody(req);
+    const email = normalizeEmail(body.email);
+    const store = await readAuthStore();
+    const user = store.users.find((item) => item.email === email);
+    const suppliedHash = user ? scryptSync(String(body.password ?? ""), user.salt, 64) : null;
+    const storedHash = user ? Buffer.from(user.passwordHash, "hex") : null;
+    if (!user || !suppliedHash || !storedHash || !timingSafeEqual(suppliedHash, storedHash)) {
+      sendJson(res, 401, { error: "Email or password is incorrect" });
+      return true;
+    }
+    await createSession(res, user.id);
+    sendJson(res, 200, { user: publicUser(user) });
+    return true;
+  }
+
+  if (pathname === "/api/auth/logout" && req.method === "POST") {
+    await clearSession(req, res);
+    sendJson(res, 200, { ok: true });
+    return true;
+  }
+
   if (pathname === "/api/rooms" && req.method === "GET") {
     const store = await readStore();
     sendJson(res, 200, { rooms: Object.values(store.rooms) });
@@ -370,7 +500,12 @@ async function handleApi(req, res, pathname) {
   if (pathname === "/api/rooms" && req.method === "POST") {
     const body = await readBody(req);
     const roomId = body.id ?? "demo";
-    const room = await ensureRoom(roomId, body);
+    const user = await getSessionUser(req);
+    const room = await ensureRoom(roomId, {
+      ...body,
+      ownerId: user?.id ?? body.ownerId ?? null,
+      ownerName: user?.name ?? body.ownerName ?? "Guest creator",
+    });
     sendJson(res, 200, { room });
     return true;
   }

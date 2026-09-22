@@ -84,12 +84,13 @@ function createEvent(kind: RoomEvent["kind"], title: string, detail: string): Ro
   };
 }
 
-function createNote(message: string): RoomNote {
+function createNote(message: string, author: string, position: number): RoomNote {
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    author: "Ziyi",
+    author,
     message,
     time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    position: Math.max(0, Math.min(100, position)),
   };
 }
 
@@ -177,6 +178,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   const [syncStatus, setSyncStatus] = useState("Connecting Socket.io");
   const [shareStatus, setShareStatus] = useState("Share room");
   const [onlineCount, setOnlineCount] = useState(1);
+  const [currentUserName, setCurrentUserName] = useState("Guest creator");
   const socketRef = useRef<RoomSocket | null>(null);
   const audioEndpoint = `/api/rooms/${encodeURIComponent(roomId)}/audio`;
 
@@ -313,6 +315,15 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     };
   }, [audioEndpoint, initialTitle, prependEvent, prependNote, roomId]);
 
+  useEffect(() => {
+    fetch("/api/auth/me")
+      .then((response) => response.json())
+      .then((data: { user?: { name?: string } | null }) => {
+        if (data.user?.name) setCurrentUserName(data.user.name);
+      })
+      .catch(() => undefined);
+  }, []);
+
   const publishEvent = (event: RoomEvent) => {
     prependEvent(event);
 
@@ -441,6 +452,30 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     setSyncStatus("AI melody saved through backend");
   };
 
+  const handleAddCompositionToRoom = (nextComposition: MusicComposition) => {
+    if (tracks.some((track) => track.compositionId === nextComposition.id)) return;
+    if (tracks.length >= 12) {
+      setSyncStatus("Track limit reached");
+      return;
+    }
+
+    const track: Track = {
+      id: `ai-track-${Date.now().toString(36)}`,
+      name: nextComposition.title,
+      color: "#235fba",
+      muted: false,
+      clips: 1,
+      source: "ai",
+      compositionId: nextComposition.id,
+    };
+    const event = createEvent(
+      "remix",
+      "AI melody added to room",
+      `${currentUserName} added ${nextComposition.title} as a playable ${nextComposition.notes.length}-note track.`,
+    );
+    publishTracksChange([...tracks, track], event);
+  };
+
   const handleUpload = async (file: File) => {
     setSyncStatus("Analyzing uploaded waveform");
     const extractedWaveformPeaks = await extractWaveformPeaks(file);
@@ -496,9 +531,9 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     setSyncStatus("Upload saved through backend");
   };
 
-  const handleSendNote = (message: string) => {
-    const note = createNote(message);
-    const event = createEvent("note", "Room note added", `Ziyi: ${message}`);
+  const handleSendNote = (message: string, position: number) => {
+    const note = createNote(message, currentUserName, position);
+    const event = createEvent("note", "Timestamped note added", `${currentUserName} added a note at ${Math.round(position)}% of the waveform.`);
 
     prependNote(note);
     prependEvent(event);
@@ -644,6 +679,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
               uploadedFileName={uploadedFileName}
               waveformPeaks={waveformPeaks}
               regions={timelineRegions}
+              notes={notes}
               onSelectionAction={handleSelectionAction}
               onRegionsChange={handleRegionsChange}
             />
@@ -651,6 +687,8 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
               roomId={roomId}
               composition={composition}
               onCompositionGenerated={handleCompositionGenerated}
+              onAddToRoom={handleAddCompositionToRoom}
+              isAddedToRoom={Boolean(composition && tracks.some((track) => track.compositionId === composition.id))}
             />
             <EventActivity events={events} />
             <div className="grid gap-3 md:grid-cols-5">

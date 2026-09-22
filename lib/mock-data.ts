@@ -92,6 +92,8 @@ export type Track = {
   color: string;
   muted: boolean;
   clips: number;
+  source?: "audio" | "ai";
+  compositionId?: string;
 };
 
 export const initialTracks: Track[] = [
@@ -118,6 +120,7 @@ export type RoomNote = {
   author: string;
   message: string;
   time: string;
+  position?: number;
 };
 
 export type TimelineRegion = {
@@ -183,18 +186,21 @@ export const initialRoomNotes: RoomNote[] = [
     author: "Ziyi",
     message: "Marked the chorus section for the Always edit.",
     time: "11:20",
+    position: 28,
   },
   {
     id: "note-franky",
     author: "Franky",
     message: "The blue selection feels like the cleanest inpoint area.",
     time: "11:22",
+    position: 52,
   },
   {
     id: "note-lina",
     author: "Lina",
     message: "I added a soft vocal layer note for the second pass.",
     time: "11:24",
+    position: 76,
   },
 ];
 
