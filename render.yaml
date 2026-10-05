@@ -1,8 +1,10 @@
 services:
   - type: web
-    name: collabmuse-fyp-demo
-    env: node
-    plan: free
-    buildCommand: npm install
-    startCommand: node preview-server.mjs
-    autoDeploy: true
+    name: collabmuse-fyp
+    runtime: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production

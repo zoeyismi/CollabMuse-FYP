@@ -91,16 +91,33 @@ export type Track = {
   name: string;
   color: string;
   muted: boolean;
+  solo?: boolean;
+  volume?: number;
   clips: number;
   source?: "audio" | "ai";
   compositionId?: string;
 };
 
+export type AudioClip = {
+  id: string;
+  name: string;
+  trackId: string;
+  duration: number;
+  createdAt: string;
+  waveformPeaks?: number[];
+  analysis?: {
+    bpm: number;
+    loudnessDb: number;
+    energy: "low" | "medium" | "high";
+    dynamics: "steady" | "varied";
+  };
+};
+
 export const initialTracks: Track[] = [
-  { id: "drums", name: "Percussion bed", color: "#b71912", muted: false, clips: 3 },
-  { id: "bass", name: "Warm bass", color: "#235fba", muted: false, clips: 2 },
-  { id: "keys", name: "Soft keys", color: "#efd84c", muted: false, clips: 4 },
-  { id: "vox", name: "Vocal layer", color: "#58e081", muted: true, clips: 2 },
+  { id: "drums", name: "Percussion bed", color: "#b71912", muted: false, solo: false, volume: 0.82, clips: 3 },
+  { id: "bass", name: "Warm bass", color: "#235fba", muted: false, solo: false, volume: 0.76, clips: 2 },
+  { id: "keys", name: "Soft keys", color: "#efd84c", muted: false, solo: false, volume: 0.68, clips: 4 },
+  { id: "vox", name: "Vocal layer", color: "#58e081", muted: true, solo: false, volume: 0.74, clips: 2 },
 ];
 
 export const tracks = initialTracks;
@@ -130,6 +147,10 @@ export type TimelineRegion = {
   left: number;
   width: number;
   color: string;
+  lane?: number;
+  clipId?: string;
+  sourceOffset?: number;
+  sourceDuration?: number;
 };
 
 export type CompositionNote = {
@@ -147,6 +168,14 @@ export type MusicComposition = {
   explanation: string;
   notes: CompositionNote[];
   provider: "openai" | "local";
+};
+
+export type RoomVersion = {
+  id: string;
+  name: string;
+  createdAt: string;
+  trackCount: number;
+  regionCount: number;
 };
 
 export const initialRoomEvents: RoomEvent[] = [

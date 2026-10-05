@@ -4,7 +4,18 @@
       "id": "demo",
       "title": "Always session",
       "uploadedFileName": "always-reference.wav",
+      "audioAvailable": false,
+      "audioStorageName": null,
+      "audioMimeType": null,
+      "waveformPeaks": null,
       "events": [
+        {
+          "id": "1791028432237-2yru5i6mqrj",
+          "kind": "remix",
+          "title": "AI melody rendered to audio",
+          "detail": "Guest creator added Warm R&B idea as a playable 16-note WAV track.",
+          "time": "19:53"
+        },
         {
           "id": "event-upload",
           "kind": "upload",
@@ -34,27 +45,27 @@
           "time": "11:24"
         }
       ],
-      "createdAt": "2026-05-25T06:47:35.669Z",
-      "updatedAt": "2026-09-13T09:50:27.024Z",
-      "waveformPeaks": null,
       "notes": [
         {
           "id": "note-ziyi",
           "author": "Ziyi",
           "message": "Marked the chorus section for the Always edit.",
-          "time": "11:20"
+          "time": "11:20",
+          "position": 28
         },
         {
           "id": "note-franky",
           "author": "Franky",
           "message": "The blue selection feels like the cleanest inpoint area.",
-          "time": "11:22"
+          "time": "11:22",
+          "position": 52
         },
         {
           "id": "note-lina",
           "author": "Lina",
           "message": "I added a soft vocal layer note for the second pass.",
-          "time": "11:24"
+          "time": "11:24",
+          "position": 76
         }
       ],
       "timelineRegions": [
@@ -90,7 +101,54 @@
           "width": 16,
           "color": "#58e081"
         }
-      ]
+      ],
+      "tracks": [
+        {
+          "id": "drums",
+          "name": "Percussion bed",
+          "color": "#b71912",
+          "muted": false,
+          "solo": false,
+          "volume": 0.82,
+          "clips": 3
+        },
+        {
+          "id": "bass",
+          "name": "Warm bass",
+          "color": "#235fba",
+          "muted": false,
+          "solo": false,
+          "volume": 0.76,
+          "clips": 2
+        },
+        {
+          "id": "keys",
+          "name": "Soft keys",
+          "color": "#efd84c",
+          "muted": false,
+          "solo": false,
+          "volume": 0.68,
+          "clips": 4
+        },
+        {
+          "id": "vox",
+          "name": "Vocal layer",
+          "color": "#58e081",
+          "muted": true,
+          "solo": false,
+          "volume": 0.74,
+          "clips": 2
+        }
+      ],
+      "composition": null,
+      "audioClips": [],
+      "versions": [],
+      "createdAt": "2026-10-03T11:52:10.746Z",
+      "updatedAt": "2026-10-04T06:18:52.830Z",
+      "members": [],
+      "invites": [],
+      "bpm": 96,
+      "timeSignature": "4/4"
     }
   }
 }

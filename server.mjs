@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import next from "next";
 import { Server } from "socket.io";
@@ -88,10 +88,10 @@ const initialTimelineRegions = [
 ];
 
 const initialTracks = [
-  { id: "drums", name: "Percussion bed", color: "#b71912", muted: false, clips: 3 },
-  { id: "bass", name: "Warm bass", color: "#235fba", muted: false, clips: 2 },
-  { id: "keys", name: "Soft keys", color: "#efd84c", muted: false, clips: 4 },
-  { id: "vox", name: "Vocal layer", color: "#58e081", muted: true, clips: 2 },
+  { id: "drums", name: "Percussion bed", color: "#b71912", muted: false, solo: false, volume: 0.82, clips: 3 },
+  { id: "bass", name: "Warm bass", color: "#235fba", muted: false, solo: false, volume: 0.76, clips: 2 },
+  { id: "keys", name: "Soft keys", color: "#efd84c", muted: false, solo: false, volume: 0.68, clips: 4 },
+  { id: "vox", name: "Vocal layer", color: "#58e081", muted: true, solo: false, volume: 0.74, clips: 2 },
 ];
 
 const defaultRoom = {
@@ -107,6 +107,10 @@ const defaultRoom = {
   timelineRegions: initialTimelineRegions,
   tracks: initialTracks,
   composition: null,
+  audioClips: [],
+  versions: [],
+  bpm: 96,
+  timeSignature: "4/4",
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
 };
@@ -169,6 +173,21 @@ async function getSessionUser(req) {
   return store.users.find((user) => user.id === session.userId) ?? null;
 }
 
+function canAccessRoom(room, user) {
+  if (room.id === "demo" || !room.ownerId) return true;
+  if (!user) return false;
+  return room.ownerId === user.id || (room.members ?? []).some((member) => member.userId === user.id);
+}
+
+function isRoomOwner(room, user) {
+  return room.id === "demo" || !room.ownerId || Boolean(user && room.ownerId === user.id);
+}
+
+function canEditRoom(room, user) {
+  if (isRoomOwner(room, user)) return true;
+  return Boolean(user && (room.members ?? []).some((member) => member.userId === user.id && member.role === "editor"));
+}
+
 async function createSession(res, userId) {
   const token = randomBytes(32).toString("hex");
   const store = await readAuthStore();
@@ -214,6 +233,12 @@ async function ensureRoom(roomId, roomPatch = {}) {
         timelineRegions: existing.timelineRegions ?? initialTimelineRegions,
         tracks: existing.tracks ?? initialTracks,
         composition: existing.composition ?? null,
+        audioClips: existing.audioClips ?? [],
+        versions: existing.versions ?? [],
+        bpm: existing.bpm ?? 96,
+        timeSignature: existing.timeSignature ?? "4/4",
+        members: existing.members ?? [],
+        invites: existing.invites ?? [],
         ...roomPatch,
         id: roomId,
         updatedAt: now,
@@ -231,6 +256,12 @@ async function ensureRoom(roomId, roomPatch = {}) {
         timelineRegions: roomPatch.timelineRegions ?? initialTimelineRegions,
         tracks: roomPatch.tracks ?? initialTracks,
         composition: roomPatch.composition ?? null,
+        audioClips: roomPatch.audioClips ?? [],
+        versions: roomPatch.versions ?? [],
+        bpm: roomPatch.bpm ?? 96,
+        timeSignature: roomPatch.timeSignature ?? "4/4",
+        members: roomPatch.members ?? [],
+        invites: roomPatch.invites ?? [],
         createdAt: now,
         updatedAt: now,
       };
@@ -271,11 +302,15 @@ async function updateComposition(roomId, composition) {
   return ensureRoom(roomId, { composition });
 }
 
+async function updateAudioClips(roomId, audioClips) {
+  return ensureRoom(roomId, { audioClips });
+}
+
 function stringSeed(value) {
   return Array.from(value).reduce((seed, character) => ((seed * 31) + character.charCodeAt(0)) >>> 0, 17);
 }
 
-function generateLocalComposition({ prompt = "", key = "C", mood = "warm", style = "R&B", bars = 2 }) {
+function generateLocalComposition({ prompt = "", key = "C", mood = "warm", style = "R&B", bars = 2, sourceAnalysis = null }) {
   const noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
   const rootIndex = Math.max(0, noteNames.indexOf(key));
   const isMinor = /minor|sad|dark|moody/i.test(`${mood} ${prompt}`);
@@ -300,9 +335,9 @@ function generateLocalComposition({ prompt = "", key = "C", mood = "warm", style
     id: `composition-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     title: `${mood.charAt(0).toUpperCase()}${mood.slice(1)} ${style} idea`,
     key: `${key} ${isMinor ? "minor" : "major"}`,
-    tempo: /slow|calm|dream/i.test(mood) ? 72 : /energetic|bright|dance/i.test(mood) ? 112 : 88,
+    tempo: sourceAnalysis?.bpm || (/slow|calm|dream/i.test(mood) ? 72 : /energetic|bright|dance/i.test(mood) ? 112 : 88),
     style,
-    explanation: `A ${count}-note ${style} motif shaped around a ${mood} ${key} ${isMinor ? "minor" : "major"} scale.`,
+    explanation: `A ${count}-note ${style} motif shaped around a ${mood} ${key} ${isMinor ? "minor" : "major"} scale${sourceAnalysis?.bpm ? ` and matched to the source clip at ${sourceAnalysis.bpm} BPM` : ""}.`,
     notes,
     provider: "local",
   };
@@ -332,7 +367,7 @@ async function generateAiComposition(input) {
       store: false,
       max_output_tokens: 1200,
       instructions: "You are a music composition copilot. Create an original, short, playable monophonic melody. Return only data matching the schema. Avoid copying any existing song or artist melody.",
-      input: `Create ${input.bars ?? 2} bars in ${input.key ?? "C"}, style ${input.style ?? "R&B"}, mood ${input.mood ?? "warm"}. Creative direction: ${input.prompt ?? "original melodic idea"}`,
+      input: `Create ${input.bars ?? 2} bars in ${input.key ?? "C"}, style ${input.style ?? "R&B"}, mood ${input.mood ?? "warm"}. Creative direction: ${input.prompt ?? "original melodic idea"}. ${input.sourceAnalysis ? `Match this uploaded clip analysis: ${JSON.stringify(input.sourceAnalysis)}.` : ""}`,
       text: {
         format: {
           type: "json_schema",
@@ -432,6 +467,28 @@ function sendJson(res, status, payload) {
   res.end(JSON.stringify(payload));
 }
 
+function publicAudioClips(clips = []) {
+  return clips.map((clip) => ({
+    id: clip.id,
+    name: clip.name,
+    trackId: clip.trackId,
+    duration: clip.duration,
+    createdAt: clip.createdAt,
+    analysis: clip.analysis,
+    waveformPeaks: clip.waveformPeaks ?? [],
+  }));
+}
+
+function publicVersions(versions = []) {
+  return versions.map((version) => ({
+    id: version.id,
+    name: version.name,
+    createdAt: version.createdAt,
+    trackCount: version.snapshot?.tracks?.length ?? 0,
+    regionCount: version.snapshot?.timelineRegions?.length ?? 0,
+  }));
+}
+
 async function handleApi(req, res, pathname) {
   if (pathname === "/api/auth/me" && req.method === "GET") {
     const user = await getSessionUser(req);
@@ -493,7 +550,8 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === "/api/rooms" && req.method === "GET") {
     const store = await readStore();
-    sendJson(res, 200, { rooms: Object.values(store.rooms) });
+    const user = await getSessionUser(req);
+    sendJson(res, 200, { rooms: Object.values(store.rooms).filter((room) => canAccessRoom(room, user)) });
     return true;
   }
 
@@ -501,6 +559,42 @@ async function handleApi(req, res, pathname) {
     const body = await readBody(req);
     const roomId = body.id ?? "demo";
     const user = await getSessionUser(req);
+    if (body.sourceRoomId) {
+      const sourceRoomId = safePathSegment(body.sourceRoomId, "demo");
+      const store = await readStore();
+      const sourceRoom = store.rooms[sourceRoomId];
+      if (!sourceRoom) {
+        sendJson(res, 404, { error: "Source room not found" });
+        return true;
+      }
+      if (!canAccessRoom(sourceRoom, user)) {
+        sendJson(res, user ? 403 : 401, { error: "You cannot duplicate this room" });
+        return true;
+      }
+      const room = await ensureRoom(roomId, {
+        ...sourceRoom,
+        id: roomId,
+        title: body.title ?? `${sourceRoom.title} copy`,
+        ownerId: user?.id ?? null,
+        ownerName: user?.name ?? "Guest creator",
+        createdAt: undefined,
+        updatedAt: undefined,
+        events: [{
+          id: `event-copy-${Date.now()}`,
+          kind: "sync",
+          title: "Room duplicated",
+          detail: `Created from ${sourceRoom.title}`,
+          time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        }, ...(sourceRoom.events ?? [])].slice(0, 40),
+      });
+      const sourceDirectory = path.join(uploadsDir, sourceRoomId);
+      const targetDirectory = path.join(uploadsDir, safePathSegment(roomId, "room"));
+      await cp(sourceDirectory, targetDirectory, { recursive: true, force: true }).catch((error) => {
+        if (error?.code !== "ENOENT") throw error;
+      });
+      sendJson(res, 201, { room });
+      return true;
+    }
     const room = await ensureRoom(roomId, {
       ...body,
       ownerId: user?.id ?? body.ownerId ?? null,
@@ -508,6 +602,102 @@ async function handleApi(req, res, pathname) {
     });
     sendJson(res, 200, { room });
     return true;
+  }
+
+  const inviteMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/invites$/);
+  const joinMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/join$/);
+  const membersMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/members$/);
+  const memberMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/members\/([^/]+)$/);
+
+  if (joinMatch && req.method === "POST") {
+    const user = await getSessionUser(req);
+    if (!user) {
+      sendJson(res, 401, { error: "Log in before joining a room" });
+      return true;
+    }
+    const roomId = decodeURIComponent(joinMatch[1]);
+    const room = await ensureRoom(roomId);
+    const body = await readBody(req);
+    const invite = (room.invites ?? []).find((item) => item.token === body.token && Date.parse(item.expiresAt) > Date.now());
+    if (!invite) {
+      sendJson(res, 403, { error: "This invitation is invalid or expired" });
+      return true;
+    }
+    const member = { userId: user.id, name: user.name, email: user.email, role: invite.role ?? "editor", joinedAt: new Date().toISOString() };
+    const members = [...(room.members ?? []).filter((item) => item.userId !== user.id), member];
+    const joinedRoom = await ensureRoom(roomId, { members });
+    sendJson(res, 200, { room: joinedRoom, member });
+    return true;
+  }
+
+  if (inviteMatch && req.method === "POST") {
+    const user = await getSessionUser(req);
+    const roomId = decodeURIComponent(inviteMatch[1]);
+    const room = await ensureRoom(roomId);
+    if (!isRoomOwner(room, user)) {
+      sendJson(res, 403, { error: "Only the room owner can invite collaborators" });
+      return true;
+    }
+    const invite = {
+      token: randomBytes(18).toString("hex"),
+      role: "editor",
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+    };
+    await ensureRoom(roomId, { invites: [invite, ...(room.invites ?? [])].slice(0, 10) });
+    sendJson(res, 201, { token: invite.token, expiresAt: invite.expiresAt, role: invite.role });
+    return true;
+  }
+
+  if (membersMatch && req.method === "GET") {
+    const room = await ensureRoom(decodeURIComponent(membersMatch[1]));
+    const user = await getSessionUser(req);
+    if (!canAccessRoom(room, user)) {
+      sendJson(res, user ? 403 : 401, { error: "Room access denied" });
+      return true;
+    }
+    sendJson(res, 200, {
+      owner: { userId: room.ownerId, name: room.ownerName ?? "Room owner", role: "owner" },
+      members: room.members ?? [],
+      currentRole: isRoomOwner(room, user) ? "owner" : (room.members ?? []).find((member) => member.userId === user?.id)?.role ?? "viewer",
+    });
+    return true;
+  }
+
+  if (memberMatch && (req.method === "PATCH" || req.method === "DELETE")) {
+    const roomId = decodeURIComponent(memberMatch[1]);
+    const memberId = decodeURIComponent(memberMatch[2]);
+    const room = await ensureRoom(roomId);
+    const user = await getSessionUser(req);
+    if (!isRoomOwner(room, user)) {
+      sendJson(res, 403, { error: "Only the room owner can manage members" });
+      return true;
+    }
+    let members = room.members ?? [];
+    if (req.method === "PATCH") {
+      const body = await readBody(req);
+      const role = body.role === "viewer" ? "viewer" : "editor";
+      members = members.map((member) => member.userId === memberId ? { ...member, role } : member);
+    } else {
+      members = members.filter((member) => member.userId !== memberId);
+    }
+    await ensureRoom(roomId, { members });
+    sendJson(res, 200, { members });
+    return true;
+  }
+
+  const protectedRoomMatch = pathname.match(/^\/api\/rooms\/([^/]+)/);
+  if (protectedRoomMatch) {
+    const room = await ensureRoom(decodeURIComponent(protectedRoomMatch[1]));
+    const user = await getSessionUser(req);
+    if (!canAccessRoom(room, user)) {
+      sendJson(res, user ? 403 : 401, { error: user ? "You are not a member of this room" : "Log in to access this room" });
+      return true;
+    }
+    if (req.method !== "GET" && !canEditRoom(room, user)) {
+      sendJson(res, 403, { error: "Viewer access is read-only" });
+      return true;
+    }
   }
 
   const eventMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/events$/);
@@ -523,11 +713,108 @@ async function handleApi(req, res, pathname) {
       timelineRegions: room.timelineRegions,
       tracks: room.tracks ?? initialTracks,
       composition: room.composition ?? null,
+      audioClips: publicAudioClips(room.audioClips),
+      versions: publicVersions(room.versions),
+      bpm: room.bpm ?? 96,
+      timeSignature: room.timeSignature ?? "4/4",
     });
     return true;
   }
 
   const audioMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/audio$/);
+  const clipsMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/clips$/);
+  const clipAudioMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/clips\/([^/]+)\/audio$/);
+  const clipMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/clips\/([^/]+)$/);
+
+  if (clipsMatch && req.method === "GET") {
+    const room = await ensureRoom(decodeURIComponent(clipsMatch[1]));
+    sendJson(res, 200, { audioClips: publicAudioClips(room.audioClips) });
+    return true;
+  }
+
+  if (clipsMatch && req.method === "POST") {
+    const roomId = decodeURIComponent(clipsMatch[1]);
+    const uploadUrl = new URL(req.url ?? pathname, `http://${req.headers.host ?? `localhost:${port}`}`);
+    const requestedName = uploadUrl.searchParams.get("name") || "audio-clip";
+    const trackId = safePathSegment(uploadUrl.searchParams.get("trackId"), "track");
+    const duration = Math.max(0, Number(uploadUrl.searchParams.get("duration")) || 0);
+    const bpm = Math.max(0, Number(req.headers["x-audio-bpm"]) || 0);
+    const loudnessDb = Number(req.headers["x-audio-loudness"] ?? 0);
+    const energy = ["low", "medium", "high"].includes(req.headers["x-audio-energy"]) ? req.headers["x-audio-energy"] : "medium";
+    const dynamics = req.headers["x-audio-dynamics"] === "varied" ? "varied" : "steady";
+    let waveformPeaks = [];
+    try {
+      const parsedPeaks = JSON.parse(String(req.headers["x-waveform-peaks"] ?? "[]"));
+      if (Array.isArray(parsedPeaks)) waveformPeaks = parsedPeaks.slice(0, 128).map((value) => Math.max(2, Math.min(100, Number(value) || 2)));
+    } catch {
+      waveformPeaks = [];
+    }
+    const clipId = `clip-${Date.now()}-${randomBytes(3).toString("hex")}`;
+    const storageName = `${clipId}-${safePathSegment(requestedName, "audio-clip")}`;
+    const roomDirectory = path.join(uploadsDir, safePathSegment(roomId, "room"));
+    const audioBuffer = await readBinaryBody(req);
+    if (audioBuffer.length === 0) {
+      sendJson(res, 400, { error: "Audio file is empty" });
+      return true;
+    }
+    await mkdir(roomDirectory, { recursive: true });
+    await writeFile(path.join(roomDirectory, storageName), audioBuffer);
+    const room = await ensureRoom(roomId);
+    const clip = {
+      id: clipId,
+      name: requestedName.slice(0, 180),
+      trackId,
+      duration,
+      storageName,
+      mimeType: req.headers["content-type"] || "audio/mpeg",
+      createdAt: new Date().toISOString(),
+      analysis: { bpm, loudnessDb, energy, dynamics },
+      waveformPeaks,
+    };
+    await updateAudioClips(roomId, [...(room.audioClips ?? []), clip].slice(-24));
+    sendJson(res, 201, { clip: { ...clip, storageName: undefined, mimeType: undefined } });
+    return true;
+  }
+
+  if (clipAudioMatch && req.method === "GET") {
+    const roomId = decodeURIComponent(clipAudioMatch[1]);
+    const clipId = decodeURIComponent(clipAudioMatch[2]);
+    const room = await ensureRoom(roomId);
+    const clip = (room.audioClips ?? []).find((item) => item.id === clipId);
+    if (!clip?.storageName) {
+      sendJson(res, 404, { error: "Audio clip not found" });
+      return true;
+    }
+    const audioBuffer = await readFile(path.join(uploadsDir, safePathSegment(roomId, "room"), clip.storageName));
+    res.writeHead(200, {
+      "Content-Type": clip.mimeType || "audio/mpeg",
+      "Content-Length": audioBuffer.length,
+      "Cache-Control": "no-store",
+    });
+    res.end(audioBuffer);
+    return true;
+  }
+
+  if (clipMatch && req.method === "DELETE") {
+    const roomId = decodeURIComponent(clipMatch[1]);
+    const clipId = decodeURIComponent(clipMatch[2]);
+    const room = await ensureRoom(roomId);
+    const clip = (room.audioClips ?? []).find((item) => item.id === clipId);
+    if (!clip) {
+      sendJson(res, 404, { error: "Audio clip not found" });
+      return true;
+    }
+    if (clip.storageName) {
+      await rm(path.join(uploadsDir, safePathSegment(roomId, "room"), clip.storageName), { force: true });
+    }
+    const nextClips = (room.audioClips ?? []).filter((item) => item.id !== clipId);
+    await updateAudioClips(roomId, nextClips);
+    sendJson(res, 200, {
+      deleted: true,
+      audioClips: publicAudioClips(nextClips),
+    });
+    return true;
+  }
   if (audioMatch && req.method === "POST") {
     const roomId = decodeURIComponent(audioMatch[1]);
     const uploadUrl = new URL(req.url ?? pathname, `http://${req.headers.host ?? `localhost:${port}`}`);
@@ -633,6 +920,7 @@ async function handleApi(req, res, pathname) {
       mood: String(body.mood ?? "warm").slice(0, 40),
       style: String(body.style ?? "R&B").slice(0, 40),
       bars: Math.max(1, Math.min(4, Number(body.bars) || 2)),
+      sourceAnalysis: body.sourceAnalysis && typeof body.sourceAnalysis === "object" ? body.sourceAnalysis : null,
     };
 
     let composition;
@@ -677,8 +965,75 @@ async function handleApi(req, res, pathname) {
       timelineRegions: room.timelineRegions,
       tracks: room.tracks ?? initialTracks,
       composition: room.composition ?? null,
+      audioClips: publicAudioClips(room.audioClips),
       event: body.event,
       events: room.events,
+    });
+    return true;
+  }
+
+  const versionRestoreMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/versions\/([^/]+)\/restore$/);
+  const versionsMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/versions$/);
+
+  if (versionsMatch && req.method === "GET") {
+    const room = await ensureRoom(decodeURIComponent(versionsMatch[1]));
+    sendJson(res, 200, { versions: publicVersions(room.versions) });
+    return true;
+  }
+
+  if (versionsMatch && req.method === "POST") {
+    const roomId = decodeURIComponent(versionsMatch[1]);
+    const room = await ensureRoom(roomId);
+    const body = await readBody(req);
+    const createdAt = new Date().toISOString();
+    const version = {
+      id: `version-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: String(body.name ?? `Version ${(room.versions?.length ?? 0) + 1}`).trim().slice(0, 80),
+      createdAt,
+      snapshot: {
+        tracks: room.tracks ?? initialTracks,
+        timelineRegions: room.timelineRegions ?? initialTimelineRegions,
+        composition: room.composition ?? null,
+        audioClips: room.audioClips ?? [],
+        bpm: room.bpm ?? 96,
+        timeSignature: room.timeSignature ?? "4/4",
+      },
+    };
+    const versions = [version, ...(room.versions ?? [])].slice(0, 20);
+    const nextRoom = await ensureRoom(roomId, { versions });
+    if (body.event) await appendEvent(roomId, body.event);
+    sendJson(res, 200, { version: publicVersions([version])[0], versions: publicVersions(nextRoom.versions), event: body.event });
+    return true;
+  }
+
+  if (versionRestoreMatch && req.method === "POST") {
+    const roomId = decodeURIComponent(versionRestoreMatch[1]);
+    const versionId = decodeURIComponent(versionRestoreMatch[2]);
+    const room = await ensureRoom(roomId);
+    const version = (room.versions ?? []).find((item) => item.id === versionId);
+    if (!version) {
+      sendJson(res, 404, { error: "Version not found" });
+      return true;
+    }
+    const body = await readBody(req);
+    const restoredRoom = await ensureRoom(roomId, {
+      tracks: version.snapshot.tracks ?? initialTracks,
+      timelineRegions: version.snapshot.timelineRegions ?? initialTimelineRegions,
+      composition: version.snapshot.composition ?? null,
+      audioClips: version.snapshot.audioClips ?? [],
+      bpm: version.snapshot.bpm ?? 96,
+      timeSignature: version.snapshot.timeSignature ?? "4/4",
+    });
+    if (body.event) await appendEvent(roomId, body.event);
+    sendJson(res, 200, {
+      tracks: restoredRoom.tracks,
+      timelineRegions: restoredRoom.timelineRegions,
+      composition: restoredRoom.composition,
+      audioClips: publicAudioClips(restoredRoom.audioClips),
+      bpm: restoredRoom.bpm ?? 96,
+      timeSignature: restoredRoom.timeSignature ?? "4/4",
+      versions: publicVersions(restoredRoom.versions),
+      event: body.event,
     });
     return true;
   }
@@ -691,9 +1046,43 @@ async function handleApi(req, res, pathname) {
   }
 
   if (roomMatch && req.method === "PATCH") {
+    const currentRoom = await ensureRoom(roomMatch[1]);
+    const user = await getSessionUser(req);
+    if (!isRoomOwner(currentRoom, user)) {
+      sendJson(res, 403, { error: "Only the room owner can change room settings" });
+      return true;
+    }
     const body = await readBody(req);
     const room = await ensureRoom(roomMatch[1], body);
     sendJson(res, 200, { room });
+    return true;
+  }
+
+  if (roomMatch && req.method === "DELETE") {
+    const roomId = decodeURIComponent(roomMatch[1]);
+    if (roomId === "demo") {
+      sendJson(res, 400, { error: "The demo room cannot be deleted" });
+      return true;
+    }
+
+    const existingRoom = await ensureRoom(roomId);
+    const user = await getSessionUser(req);
+    if (!isRoomOwner(existingRoom, user)) {
+      sendJson(res, 403, { error: "Only the room owner can delete this room" });
+      return true;
+    }
+
+    const store = await readStore();
+    if (!store.rooms[roomId]) {
+      sendJson(res, 404, { error: "Room not found" });
+      return true;
+    }
+
+    delete store.rooms[roomId];
+    await writeStore(store);
+    await rm(path.join(uploadsDir, safePathSegment(roomId, "room")), { recursive: true, force: true });
+    io.to(roomId).emit("room:deleted", { roomId });
+    sendJson(res, 200, { deleted: true, roomId });
     return true;
   }
 
@@ -734,9 +1123,16 @@ io.on("connection", (socket) => {
       await broadcastPresence(previousRoomId);
     }
 
+    const room = await ensureRoom(roomId);
+    const user = await getSessionUser(socket.request);
+    if (!canAccessRoom(room, user)) {
+      socket.data.canEdit = false;
+      socket.emit("room:access-denied", { roomId });
+      return;
+    }
     socket.join(roomId);
     socket.data.roomId = roomId;
-    const room = await ensureRoom(roomId);
+    socket.data.canEdit = canEditRoom(room, user);
     socket.emit("room:snapshot", {
       roomId,
       title: room.title,
@@ -748,39 +1144,43 @@ io.on("connection", (socket) => {
       timelineRegions: room.timelineRegions,
       tracks: room.tracks ?? initialTracks,
       composition: room.composition ?? null,
+      audioClips: publicAudioClips(room.audioClips),
+      versions: publicVersions(room.versions),
+      bpm: room.bpm ?? 96,
+      timeSignature: room.timeSignature ?? "4/4",
     });
     await broadcastPresence(roomId);
   });
 
   socket.on("room:event", async ({ roomId = "demo", event }) => {
-    if (!event) return;
+    if (!socket.data.canEdit || socket.data.roomId !== roomId || !event) return;
     await appendEvent(roomId, event);
     socket.to(roomId).emit("room:event", event);
   });
 
   socket.on("room:upload", async ({ roomId = "demo", fileName, waveformPeaks = null, audioAvailable, event }) => {
-    if (!fileName) return;
+    if (!socket.data.canEdit || socket.data.roomId !== roomId || !fileName) return;
     await updateUpload(roomId, fileName, waveformPeaks, audioAvailable);
     if (event) await appendEvent(roomId, event);
     socket.to(roomId).emit("room:upload", { fileName, waveformPeaks, audioAvailable, event });
   });
 
   socket.on("room:note", async ({ roomId = "demo", note, event }) => {
-    if (!note) return;
+    if (!socket.data.canEdit || socket.data.roomId !== roomId || !note) return;
     await appendNote(roomId, note);
     if (event) await appendEvent(roomId, event);
     socket.to(roomId).emit("room:note", { note, event });
   });
 
   socket.on("room:timeline", async ({ roomId = "demo", timelineRegions, event }) => {
-    if (!Array.isArray(timelineRegions)) return;
+    if (!socket.data.canEdit || socket.data.roomId !== roomId || !Array.isArray(timelineRegions)) return;
     await updateTimelineRegions(roomId, timelineRegions);
     if (event) await appendEvent(roomId, event);
     socket.to(roomId).emit("room:timeline", { timelineRegions, event });
   });
 
   socket.on("room:tracks", async ({ roomId = "demo", tracks, event }) => {
-    if (!Array.isArray(tracks)) return;
+    if (!socket.data.canEdit || socket.data.roomId !== roomId || !Array.isArray(tracks)) return;
     const nextTracks = tracks.slice(0, 12);
     await updateTracks(roomId, nextTracks);
     if (event) await appendEvent(roomId, event);
@@ -788,10 +1188,36 @@ io.on("connection", (socket) => {
   });
 
   socket.on("room:composition", async ({ roomId = "demo", composition, event }) => {
-    if (!composition || !Array.isArray(composition.notes)) return;
+    if (!socket.data.canEdit || socket.data.roomId !== roomId || !composition || !Array.isArray(composition.notes)) return;
     await updateComposition(roomId, composition);
     if (event) await appendEvent(roomId, event);
     socket.to(roomId).emit("room:composition", { composition, event });
+  });
+
+  socket.on("room:clips", async ({ roomId = "demo", audioClips, event }) => {
+    if (!socket.data.canEdit || socket.data.roomId !== roomId || !Array.isArray(audioClips)) return;
+    if (event) await appendEvent(roomId, event);
+    socket.to(roomId).emit("room:clips", { audioClips, event });
+  });
+
+  socket.on("room:transport", ({ roomId = "demo", command, userName = "A collaborator" }) => {
+    if (!socket.data.canEdit || socket.data.roomId !== roomId || !command) return;
+    if (!["play", "pause", "seek"].includes(command.action) || !Number.isFinite(command.position)) return;
+    socket.to(roomId).emit("room:transport", {
+      id: String(command.id ?? Date.now()),
+      action: command.action,
+      position: Math.max(0, Number(command.position)),
+      userName: String(userName).slice(0, 60),
+    });
+  });
+
+  socket.on("room:settings", async ({ roomId = "demo", bpm, timeSignature, event }) => {
+    if (!socket.data.canEdit || socket.data.roomId !== roomId) return;
+    const normalizedBpm = Math.max(40, Math.min(220, Number(bpm) || 96));
+    const normalizedSignature = ["4/4", "3/4", "6/8"].includes(timeSignature) ? timeSignature : "4/4";
+    await ensureRoom(roomId, { bpm: normalizedBpm, timeSignature: normalizedSignature });
+    if (event) await appendEvent(roomId, event);
+    socket.to(roomId).emit("room:settings", { bpm: normalizedBpm, timeSignature: normalizedSignature, event });
   });
 
   socket.on("disconnect", async () => {

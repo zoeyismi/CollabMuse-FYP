@@ -103,4 +103,19 @@ export const SkipForward = (props: IconProps) => (
   <BaseIcon {...props}><path d="m5 4 10 8-10 8V4Z" /><path d="M19 5v14" /></BaseIcon>
 );
 export const Upload = CloudUpload;
+export const Download = (props: IconProps) => (
+  <BaseIcon {...props}><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" /></BaseIcon>
+);
 export const AudioLines = AudioWaveform;
+export const Undo2 = (props: IconProps) => (
+  <BaseIcon {...props}><path d="M9 7 4 12l5 5" /><path d="M4 12h9a7 7 0 0 1 7 7" /></BaseIcon>
+);
+export const Redo2 = (props: IconProps) => (
+  <BaseIcon {...props}><path d="m15 7 5 5-5 5" /><path d="M20 12h-9a7 7 0 0 0-7 7" /></BaseIcon>
+);
+export const Scissors = (props: IconProps) => (
+  <BaseIcon {...props}><circle cx="6" cy="7" r="3" /><circle cx="6" cy="17" r="3" /><path d="m8.7 8.3 11.3 7.2" /><path d="m8.7 15.7 4.8-3" /></BaseIcon>
+);
+export const Copy = (props: IconProps) => (
+  <BaseIcon {...props}><rect x="8" y="8" width="11" height="11" rx="2" /><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" /></BaseIcon>
+);

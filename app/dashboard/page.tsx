@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, RadioTower, Search } from "@/components/Icons";
+import { Copy, Pencil, Plus, RadioTower, Search, Trash2 } from "@/components/Icons";
 import { CollaboratorAvatars } from "@/components/CollaboratorAvatars";
 import { DashboardProjectCarousel } from "@/components/DashboardProjectCarousel";
 import { GlassButton } from "@/components/GlassButton";
@@ -36,6 +36,8 @@ export default function DashboardPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [roomStatus, setRoomStatus] = useState("Loading saved rooms");
+  const [deletingRoomId, setDeletingRoomId] = useState<string | null>(null);
+  const [workingRoomId, setWorkingRoomId] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -90,17 +92,80 @@ export default function DashboardPage() {
     }
   };
 
+  const deleteRoom = async (room: RoomSummary) => {
+    if (room.id === "demo" || deletingRoomId) return;
+    if (!window.confirm(`Delete “${room.title}” and its uploaded audio? This cannot be undone.`)) return;
+
+    setDeletingRoomId(room.id);
+    setRoomStatus(`Deleting ${room.title}`);
+    try {
+      const response = await fetch(`/api/rooms/${encodeURIComponent(room.id)}`, { method: "DELETE" });
+      if (!response.ok) throw new Error("Unable to delete room");
+      setRooms((current) => current.filter((item) => item.id !== room.id));
+      setRoomStatus("Room deleted");
+    } catch {
+      setRoomStatus("Could not delete room");
+    } finally {
+      setDeletingRoomId(null);
+    }
+  };
+
+  const renameRoom = async (room: RoomSummary) => {
+    const title = window.prompt("Rename room", room.title)?.trim();
+    if (!title || title === room.title || workingRoomId) return;
+    setWorkingRoomId(room.id);
+    setRoomStatus(`Renaming ${room.title}`);
+    try {
+      const response = await fetch(`/api/rooms/${encodeURIComponent(room.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: title.slice(0, 60) }),
+      });
+      if (!response.ok) throw new Error("Unable to rename room");
+      const data = await response.json() as { room: RoomSummary };
+      setRooms((current) => current.map((item) => item.id === room.id ? data.room : item));
+      setRoomStatus("Room renamed");
+    } catch {
+      setRoomStatus("Could not rename room");
+    } finally {
+      setWorkingRoomId(null);
+    }
+  };
+
+  const duplicateRoom = async (room: RoomSummary) => {
+    if (workingRoomId) return;
+    const title = `${room.title} copy`;
+    const id = roomIdFromTitle(title);
+    setWorkingRoomId(room.id);
+    setRoomStatus(`Duplicating ${room.title}`);
+    try {
+      const response = await fetch("/api/rooms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, title, sourceRoomId: room.id }),
+      });
+      if (!response.ok) throw new Error("Unable to duplicate room");
+      const data = await response.json() as { room: RoomSummary };
+      setRooms((current) => [data.room, ...current]);
+      setRoomStatus("Room duplicated with its project data");
+    } catch {
+      setRoomStatus("Could not duplicate room");
+    } finally {
+      setWorkingRoomId(null);
+    }
+  };
+
   return (
-    <main className="relative min-h-screen">
+    <main className="dashboard-page relative min-h-screen bg-[#f7f7f5]">
       <Navbar />
       <section className="mx-auto max-w-7xl px-5 py-10">
         <div className="flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
           <div>
-            <p className="text-sm uppercase tracking-[0.28em] text-white/42">Workspace</p>
-            <h1 className="mt-3 max-w-3xl text-4xl font-semibold leading-tight text-white sm:text-6xl">
+            <p className="text-sm uppercase tracking-[0.28em] text-[#172033]/48">Workspace</p>
+            <h1 className="mt-3 max-w-3xl text-4xl font-semibold leading-tight text-[#172033] sm:text-6xl">
               Choose a music room.
             </h1>
-            <p className="mt-4 max-w-2xl text-sm leading-7 text-white/56">
+            <p className="mt-4 max-w-2xl text-sm leading-7 text-[#172033]/62">
               Create persistent rooms, reopen earlier sessions, and enter the shared editor with one link.
             </p>
           </div>
@@ -157,21 +222,37 @@ export default function DashboardPage() {
             </div>
             <div className="mt-6 grid gap-3 sm:grid-cols-2">
               {filteredRooms.map((room, index) => (
-                <Link
+                <div
                   key={room.id}
-                  href={`/room/${encodeURIComponent(room.id)}`}
-                  className="rounded-3xl border border-white/10 bg-white/[0.055] p-4 transition hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/[0.08]"
+                  className="group relative rounded-3xl border border-white/10 bg-white/[0.055] p-4 transition hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/[0.08]"
                 >
-                  <span
-                    className="block h-2.5 w-10 rounded-full"
-                    style={{ background: ["#235fba", "#b71912", "#efd84c", "#58e081"][index % 4] }}
-                  />
-                  <h3 className="mt-5 text-sm font-semibold text-white">{room.title}</h3>
-                  <p className="mt-2 truncate text-xs text-white/46">{room.uploadedFileName || "No audio uploaded"}</p>
-                  <p className="mt-3 text-[11px] text-white/30">
-                    {room.events?.length ?? 0} events · {room.notes?.length ?? 0} notes
-                  </p>
-                </Link>
+                  <Link href={`/room/${encodeURIComponent(room.id)}`} className="block pr-24">
+                    <span
+                      className="block h-2.5 w-10 rounded-full"
+                      style={{ background: ["#235fba", "#b71912", "#efd84c", "#58e081"][index % 4] }}
+                    />
+                    <h3 className="mt-5 text-sm font-semibold text-white">{room.title}</h3>
+                    <p className="mt-2 truncate text-xs text-white/46">{room.uploadedFileName || "No audio uploaded"}</p>
+                    <p className="mt-3 text-[11px] text-white/30">
+                      {room.events?.length ?? 0} events · {room.notes?.length ?? 0} notes
+                    </p>
+                  </Link>
+                  <div className="absolute right-3 top-3 flex items-center gap-1 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">
+                    <button type="button" className="grid h-8 w-8 place-items-center rounded-full text-white/30 transition hover:bg-white/10 hover:text-white" onClick={() => duplicateRoom(room)} disabled={workingRoomId === room.id} title="Duplicate room"><Copy className="h-4 w-4" /></button>
+                    <button type="button" className="grid h-8 w-8 place-items-center rounded-full text-white/30 transition hover:bg-white/10 hover:text-white" onClick={() => renameRoom(room)} disabled={workingRoomId === room.id} title="Rename room"><Pencil className="h-4 w-4" /></button>
+                  {room.id !== "demo" ? (
+                    <button
+                      type="button"
+                      className="grid h-8 w-8 place-items-center rounded-full text-white/30 transition hover:bg-white/10 hover:text-white"
+                      onClick={() => deleteRoom(room)}
+                      disabled={deletingRoomId === room.id}
+                      title="Delete room"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  ) : null}
+                  </div>
+                </div>
               ))}
               {filteredRooms.length === 0 ? (
                 <div className="rounded-3xl border border-dashed border-white/12 p-6 text-sm text-white/42 sm:col-span-2">
