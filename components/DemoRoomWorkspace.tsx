@@ -47,6 +47,7 @@ type RoomSocket = Socket<
       event?: RoomEvent;
     }) => void;
     "room:note": (payload: { note: RoomNote; event?: RoomEvent }) => void;
+    "room:notes": (payload: { notes: RoomNote[]; event?: RoomEvent }) => void;
     "room:timeline": (payload: { timelineRegions: TimelineRegion[]; event?: RoomEvent }) => void;
     "room:tracks": (payload: { tracks: Track[]; event?: RoomEvent }) => void;
     "room:composition": (payload: { composition: MusicComposition; event?: RoomEvent }) => void;
@@ -55,6 +56,7 @@ type RoomSocket = Socket<
     "room:transport": (payload: TransportCommand & { userName: string }) => void;
     "room:settings": (payload: { bpm: number; timeSignature: string; event?: RoomEvent }) => void;
     "room:access-denied": (payload: { roomId: string }) => void;
+    "room:deleted": (payload: { roomId: string }) => void;
   },
   {
     "room:join": (roomId: string) => void;
@@ -67,6 +69,7 @@ type RoomSocket = Socket<
       event: RoomEvent;
     }) => void;
     "room:note": (payload: { roomId: string; note: RoomNote; event: RoomEvent }) => void;
+    "room:notes": (payload: { roomId: string; notes: RoomNote[]; event: RoomEvent }) => void;
     "room:timeline": (payload: {
       roomId: string;
       timelineRegions: TimelineRegion[];
@@ -322,9 +325,17 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   const [currentUserName, setCurrentUserName] = useState("Guest creator");
   const [members, setMembers] = useState<RoomMember[]>([]);
   const [currentRole, setCurrentRole] = useState<RoomMember["role"]>(roomId === "demo" ? "owner" : "viewer");
+  const [inviteRole, setInviteRole] = useState<"editor" | "viewer">("editor");
   const [showMembers, setShowMembers] = useState(false);
   const socketRef = useRef<RoomSocket | null>(null);
   const audioEndpoint = `/api/rooms/${encodeURIComponent(roomId)}/audio`;
+  const canEdit = currentRole !== "viewer";
+
+  const rejectViewerEdit = () => {
+    if (canEdit) return false;
+    setSyncStatus("View-only access: editing is locked");
+    return true;
+  };
 
   const prependEvent = useCallback((event: RoomEvent) => {
     setEvents((current) =>
@@ -365,9 +376,16 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
           if (!joinResponse.ok) {
             const joinData = await joinResponse.json().catch(() => ({ error: "Could not join room" })) as { error?: string };
             setSyncStatus(joinData.error ?? "Could not join room");
-            if (joinResponse.status === 401) return;
+            if (joinResponse.status === 401) {
+              const returnTo = `${window.location.pathname}${window.location.search}`;
+              window.location.href = `/auth?mode=login&returnTo=${encodeURIComponent(returnTo)}`;
+              return;
+            }
           } else if (socketRef.current?.connected) {
             socketRef.current.emit("room:join", roomId);
+            window.history.replaceState({}, "", window.location.pathname);
+          } else {
+            window.history.replaceState({}, "", window.location.pathname);
           }
         }
         const roomResponse = await fetch(`/api/rooms/${encodeURIComponent(roomId)}`);
@@ -376,6 +394,10 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
           if (active && roomData.room?.title) setRoomTitle(roomData.room.title);
         } else if (roomResponse.status === 401 || roomResponse.status === 403) {
           setSyncStatus(roomResponse.status === 401 ? "Log in to access this private room" : "This room requires an invitation");
+          if (roomResponse.status === 401) {
+            const returnTo = `${window.location.pathname}${window.location.search}`;
+            window.location.href = `/auth?mode=login&returnTo=${encodeURIComponent(returnTo)}`;
+          }
           return;
         }
 
@@ -468,6 +490,12 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
       setSyncStatus("Room note synced from another window");
     });
 
+    socket.on("room:notes", ({ notes: syncedNotes, event }) => {
+      setNotes(syncedNotes);
+      if (event) prependEvent(event);
+      setSyncStatus("Note status synced from another window");
+    });
+
     socket.on("room:timeline", ({ timelineRegions: syncedTimelineRegions, event }) => {
       setTimelineRegions(syncedTimelineRegions);
       setTimelineUndoStack([]);
@@ -514,6 +542,12 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
       if (deniedRoomId === roomId) setSyncStatus("Room access denied");
     });
 
+    socket.on("room:deleted", ({ roomId: deletedRoomId }) => {
+      if (deletedRoomId !== roomId) return;
+      setSyncStatus("This room was deleted by its owner");
+      window.setTimeout(() => { window.location.href = "/dashboard"; }, 1200);
+    });
+
     loadRoom();
     return () => {
       active = false;
@@ -536,6 +570,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     event: RoomEvent,
     recordHistory = true,
   ) => {
+    if (rejectViewerEdit()) return;
     if (recordHistory) {
       setTimelineUndoStack((current) => [...current, timelineRegions].slice(-20));
       setTimelineRedoStack([]);
@@ -586,6 +621,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   };
 
   const publishTracksChange = (nextTracks: Track[], event: RoomEvent) => {
+    if (rejectViewerEdit()) return;
     setTracks(nextTracks);
     prependEvent(event);
 
@@ -673,6 +709,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   };
 
   const handleCompositionGenerated = (nextComposition: MusicComposition) => {
+    if (rejectViewerEdit()) return;
     const event = createEvent(
       "remix",
       "Music Copilot melody created",
@@ -700,6 +737,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   };
 
   const handleCompositionEdited = (nextComposition: MusicComposition) => {
+    if (rejectViewerEdit()) return;
     const event = createEvent(
       "remix",
       "AI melody edited",
@@ -728,6 +766,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   };
 
   const handleAddCompositionToRoom = async (nextComposition: MusicComposition) => {
+    if (rejectViewerEdit()) return;
     if (tracks.some((track) => track.compositionId === nextComposition.id)) return;
     if (tracks.length >= 12) {
       setSyncStatus("Track limit reached");
@@ -791,7 +830,59 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     }
   };
 
+  const handleGeneratedMusicReady = (clip: AudioClip) => {
+    const nextClips = [...audioClips.filter((item) => item.id !== clip.id), clip].slice(-24);
+    const event = createEvent(
+      "remix",
+      "AI music generated",
+      `${currentUserName} generated ${clip.duration} seconds of real audio with ${clip.generation?.provider === "elevenlabs" ? "ElevenLabs Music" : "CollabMuse Composer"}.`,
+    );
+    broadcastClipLibrary(nextClips, event);
+    setSyncStatus("AI-generated audio is ready to preview");
+  };
+
+  const handleAddGeneratedMusicToRoom = (clip: AudioClip) => {
+    if (rejectViewerEdit()) return;
+    if (tracks.some((track) => track.id === clip.trackId)) return;
+    if (tracks.length >= 12) {
+      setSyncStatus("Track limit reached");
+      return;
+    }
+
+    const track: Track = {
+      id: clip.trackId,
+      name: clip.name.replace(/\.(mp3|wav)$/i, "").replace(/-/g, " "),
+      color: "#235fba",
+      muted: false,
+      solo: false,
+      volume: 0.8,
+      clips: 1,
+      source: "ai",
+    };
+    const region: TimelineRegion = {
+      id: `region-${clip.id}`,
+      clipId: clip.id,
+      lane: tracks.length,
+      label: clip.name,
+      actionLabel: "Move clip",
+      left: 4,
+      width: Math.max(10, Math.min(46, Math.round(clip.duration / 2))),
+      color: track.color,
+      sourceOffset: 0,
+      sourceDuration: clip.duration,
+    };
+    const event = createEvent(
+      "remix",
+      "AI music added to workstation",
+      `${currentUserName} added ${clip.name} as a playable audio track.`,
+    );
+    publishTracksChange([...tracks, track], event);
+    publishTimelineChange([...timelineRegions, region], event);
+    setSyncStatus("AI-generated music added as a real audio track");
+  };
+
   const handleUpload = async (file: File) => {
+    if (rejectViewerEdit()) return;
     setSyncStatus("Analyzing uploaded waveform");
     const extractedWaveformPeaks = await extractWaveformPeaks(file);
     const event = createEvent("upload", "Audio uploaded", `Added ${file.name}`);
@@ -855,6 +946,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   };
 
   const handleClipUpload = async (file: File, trackId: string) => {
+    if (rejectViewerEdit()) return;
     if (isUploadingClip) return;
     setIsUploadingClip(true);
     setSyncStatus(`Uploading ${file.name}`);
@@ -909,6 +1001,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   };
 
   const handleClipDelete = async (clip: AudioClip) => {
+    if (rejectViewerEdit()) return;
     try {
       const response = await fetch(
         `/api/rooms/${encodeURIComponent(roomId)}/clips/${encodeURIComponent(clip.id)}`,
@@ -952,6 +1045,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   };
 
   const handleSendNote = (message: string, position: number) => {
+    if (rejectViewerEdit()) return;
     const note = createNote(message, currentUserName, position);
     const event = createEvent("note", "Timestamped note added", `${currentUserName} added a note at ${Math.round(position)}% of the waveform.`);
 
@@ -972,7 +1066,54 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     setSyncStatus("Room note saved through backend");
   };
 
+  const handleResolveNote = async (note: RoomNote, resolved: boolean) => {
+    if (rejectViewerEdit()) return;
+    const event = createEvent(
+      "note",
+      resolved ? "Note resolved" : "Note reopened",
+      `${currentUserName} ${resolved ? "resolved" : "reopened"} “${note.message.slice(0, 70)}”.`,
+    );
+    setSyncStatus(resolved ? "Resolving note" : "Reopening note");
+    try {
+      const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/notes/${encodeURIComponent(note.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resolved, resolvedBy: currentUserName, event }),
+      });
+      if (!response.ok) throw new Error("Note update failed");
+      const data = await response.json() as { notes: RoomNote[] };
+      setNotes(data.notes);
+      prependEvent(event);
+      if (socketRef.current?.connected) socketRef.current.emit("room:notes", { roomId, notes: data.notes, event });
+      setSyncStatus(resolved ? "Note resolved" : "Note reopened");
+    } catch {
+      setSyncStatus("Could not update note");
+    }
+  };
+
+  const handleDeleteNote = async (note: RoomNote) => {
+    if (rejectViewerEdit()) return;
+    const event = createEvent("note", "Note deleted", `${currentUserName} removed “${note.message.slice(0, 70)}”.`);
+    setSyncStatus("Deleting note");
+    try {
+      const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/notes/${encodeURIComponent(note.id)}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event }),
+      });
+      if (!response.ok) throw new Error("Note deletion failed");
+      const data = await response.json() as { notes: RoomNote[] };
+      setNotes(data.notes);
+      prependEvent(event);
+      if (socketRef.current?.connected) socketRef.current.emit("room:notes", { roomId, notes: data.notes, event });
+      setSyncStatus("Note deleted");
+    } catch {
+      setSyncStatus("Could not delete note");
+    }
+  };
+
   const handleCreateVersion = async (name: string) => {
+    if (rejectViewerEdit()) return;
     const event = createEvent("sync", "Project version saved", `${currentUserName} saved “${name}”.`);
     setSyncStatus("Saving project version");
     try {
@@ -993,6 +1134,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   };
 
   const handleRestoreVersion = async (version: RoomVersion) => {
+    if (rejectViewerEdit()) return;
     const event = createEvent("sync", "Project version restored", `${currentUserName} restored “${version.name}”.`);
     setSyncStatus(`Restoring ${version.name}`);
     try {
@@ -1124,18 +1266,22 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     publishTimelineChange(normalizedRegions, event);
   };
 
-  const handleShareRoom = async () => {
+  const handleShareRoom = async (role: "editor" | "viewer" = inviteRole) => {
     try {
       let shareUrl = `${window.location.origin}/room/${encodeURIComponent(roomId)}`;
       if (roomId !== "demo") {
         setShareStatus("Creating invite");
-        const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/invites`, { method: "POST" });
+        const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/invites`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role }),
+        });
         const data = await response.json() as { token?: string; error?: string };
         if (!response.ok || !data.token) throw new Error(data.error ?? "Could not create invite");
         shareUrl += `?invite=${encodeURIComponent(data.token)}`;
       }
       await navigator.clipboard.writeText(shareUrl);
-      setShareStatus(roomId === "demo" ? "Link copied" : "Invite copied");
+      setShareStatus(roomId === "demo" ? "Link copied" : `${role === "viewer" ? "Viewer" : "Editor"} invite copied`);
       window.setTimeout(() => setShareStatus("Share room"), 1800);
     } catch (error) {
       setShareStatus(error instanceof Error && error.message.includes("owner") ? "Owner only" : "Invite unavailable");
@@ -1144,7 +1290,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   };
 
   const handleTransportAction = (action: Omit<TransportCommand, "id">) => {
-    if (!socketRef.current?.connected) return;
+    if (!canEdit || !socketRef.current?.connected) return;
     socketRef.current.emit("room:transport", {
       roomId,
       command: { ...action, id: `${Date.now()}-${Math.random().toString(36).slice(2)}` },
@@ -1153,6 +1299,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   };
 
   const handleSessionSettingsChange = ({ bpm: nextBpm, timeSignature: nextTimeSignature }: { bpm: number; timeSignature: string }) => {
+    if (rejectViewerEdit()) return;
     setBpm(nextBpm);
     setTimeSignature(nextTimeSignature);
     const event = createEvent("sync", "Session timing changed", `${currentUserName} set the room to ${nextBpm} BPM · ${nextTimeSignature}.`);
@@ -1201,12 +1348,10 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   const copilotPanel = (
     <MusicAgentPanel
       roomId={roomId}
-      composition={composition}
-      onCompositionGenerated={handleCompositionGenerated}
-      onCompositionEdited={handleCompositionEdited}
-      onAddToRoom={handleAddCompositionToRoom}
-      isAddedToRoom={Boolean(composition && tracks.some((track) => track.compositionId === composition.id))}
+      onGeneratedAudioReady={handleGeneratedMusicReady}
+      onAddGeneratedAudioToRoom={handleAddGeneratedMusicToRoom}
       sourceClip={copilotSourceClip}
+      readOnly={!canEdit}
       compact
     />
   );
@@ -1224,30 +1369,32 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
             <button type="button" className="flex items-center gap-2 rounded-[8px] px-2 py-1 transition hover:bg-white/8" onClick={() => setShowMembers((value) => !value)} title="Room members" aria-label="Room members"><CollaboratorAvatars names={members.length ? members.slice(0, 3).map((member) => member.name.slice(0, 2).toUpperCase()) : ["ZZ", "FC", "LM"]} /><span className="hidden text-xs text-white/42 lg:inline">{onlineCount} online · {currentRole}</span></button>
             <span className="hidden max-w-[220px] truncate text-[11px] text-white/45 xl:inline" title={syncStatus}>{syncStatus}</span>
             <div className="flex items-center border-x border-white/10 px-2">
-              <button className="workstation-dark-tool" onClick={handleUndoTimeline} disabled={!timelineUndoStack.length} title="Undo"><Undo2 className="h-4 w-4" /></button>
-              <button className="workstation-dark-tool" onClick={handleRedoTimeline} disabled={!timelineRedoStack.length} title="Redo"><Redo2 className="h-4 w-4" /></button>
+              <button className="workstation-dark-tool" onClick={handleUndoTimeline} disabled={!canEdit || !timelineUndoStack.length} title="Undo"><Undo2 className="h-4 w-4" /></button>
+              <button className="workstation-dark-tool" onClick={handleRedoTimeline} disabled={!canEdit || !timelineRedoStack.length} title="Redo"><Redo2 className="h-4 w-4" /></button>
             </div>
             <LanguageSwitcher compact />
-            <GlassButton icon={Share2} className="rounded-[9px] border-white/10 bg-white/8 px-4 py-2 text-xs" onClick={handleShareRoom}>{shareStatus}</GlassButton>
+            <GlassButton icon={Share2} className="rounded-[9px] border-white/10 bg-white/8 px-4 py-2 text-xs" onClick={() => void handleShareRoom(inviteRole)}>{shareStatus}</GlassButton>
           </div>
         </header>
 
         {showMembers ? <div className="absolute right-4 top-16 z-50 w-80 rounded-[12px] border border-[#18202a]/12 bg-[#f7f5f0] p-3 text-[#172033] shadow-2xl">
           <div className="flex items-center justify-between"><div><p className="text-[11px] uppercase tracking-[0.2em] text-[#172033]/42">Room access</p><h2 className="mt-1 text-sm font-semibold">Members</h2></div><span className="rounded-full bg-[#184eb6]/10 px-2 py-1 text-[10px] font-semibold text-[#184eb6]">{currentRole}</span></div>
+          {currentRole === "owner" && roomId !== "demo" ? <div className="mt-3 flex gap-2 rounded-[8px] bg-[#18202a]/[0.045] p-2"><select value={inviteRole} onChange={(event) => setInviteRole(event.target.value as "editor" | "viewer")} className="min-w-0 flex-1 rounded-[7px] border border-[#18202a]/10 bg-white px-2 py-1.5 text-xs"><option value="editor">Can edit</option><option value="viewer">View only</option></select><button type="button" onClick={() => void handleShareRoom(inviteRole)} className="rounded-[7px] bg-[#184eb6] px-3 py-1.5 text-xs font-semibold text-white">Copy invite</button></div> : null}
           <div className="mt-3 space-y-1.5">{members.length ? members.map((member) => <div key={member.userId} className="flex items-center gap-2 rounded-[8px] bg-[#18202a]/[0.045] px-3 py-2"><span className="grid h-7 w-7 place-items-center rounded-full bg-[#184eb6] text-[10px] font-bold text-white">{member.name.slice(0, 1).toUpperCase()}</span><div className="min-w-0 flex-1"><p className="truncate text-xs font-semibold">{member.name}</p><p className="truncate text-[10px] text-[#172033]/42">{member.email ?? member.role}</p></div>{member.role === "owner" || currentRole !== "owner" ? <span className="text-[10px] capitalize text-[#172033]/48">{member.role}</span> : <><select value={member.role} onChange={(event) => void handleMemberRole(member, event.target.value as "editor" | "viewer")} className="rounded-[6px] border border-[#18202a]/10 bg-white px-1.5 py-1 text-[10px]"><option value="editor">Editor</option><option value="viewer">Viewer</option></select><button type="button" onClick={() => void handleRemoveMember(member)} className="text-[10px] text-[#a33a36]">Remove</button></>}</div>) : <p className="rounded-[8px] border border-dashed border-[#18202a]/12 p-3 text-xs text-[#172033]/46">No invited members yet. Use Share room to invite an editor.</p>}</div>
         </div> : null}
 
-        <ControlPanel uploadedFileName={uploadedFileName} uploadedAudioUrl={uploadedAudioUrl} onAudioUpload={handleUpload} onRecordedClip={handleClipUpload} roomId={roomId} tracks={tracks} regions={timelineRegions} audioClips={audioClips} onPlayheadChange={setPlayheadPosition} snapMode={snapMode} onSnapModeChange={setSnapMode} seekRequest={seekRequest} transportCommand={transportCommand} onTransportAction={handleTransportAction} bpm={bpm} timeSignature={timeSignature} onSessionSettingsChange={handleSessionSettingsChange} />
+        {!canEdit ? <div className="shrink-0 bg-[#dfe8f4] px-4 py-1.5 text-center text-[11px] font-medium text-[#174a78]">View-only access: playback, navigation and export are available. Editing is locked.</div> : null}
+        <ControlPanel readOnly={!canEdit} uploadedFileName={uploadedFileName} uploadedAudioUrl={uploadedAudioUrl} onAudioUpload={handleUpload} onRecordedClip={handleClipUpload} roomId={roomId} tracks={tracks} regions={timelineRegions} audioClips={audioClips} onPlayheadChange={setPlayheadPosition} snapMode={snapMode} onSnapModeChange={setSnapMode} seekRequest={seekRequest} transportCommand={transportCommand} onTransportAction={handleTransportAction} bpm={bpm} timeSignature={timeSignature} onSessionSettingsChange={handleSessionSettingsChange} />
 
         <div className="grid min-h-0 flex-1 md:grid-cols-[170px_minmax(0,1fr)_230px] xl:grid-cols-[210px_minmax(0,1fr)_300px]">
-          <TrackList tracks={tracks} onAddTrack={handleAddTrack} onRenameTrack={handleRenameTrack} onToggleMute={handleToggleMute} onToggleSolo={handleToggleSolo} onSetVolume={handleSetTrackVolume} onDeleteTrack={handleDeleteTrack} />
-          <WorkstationTimeline tracks={tracks} regions={timelineRegions} notes={notes} uploadedFileName={uploadedFileName} waveformPeaks={waveformPeaks} audioClips={audioClips} playheadPosition={playheadPosition} onSelectionAction={handleSelectionAction} onRegionsChange={handleRegionsChange} snapMode={snapMode} onPlayheadSeek={(position) => { setPlayheadPosition(position); setSeekRequest((current) => ({ id: (current?.id ?? 0) + 1, position })); }} />
-          <WorkstationInspector notes={notes} events={events} copilot={copilotPanel} onSendNote={handleSendNote} onSelectNote={(position) => { setPlayheadPosition(position); setSeekRequest((current) => ({ id: (current?.id ?? 0) + 1, position })); setSyncStatus(`Jumped to note at ${Math.round(position)}%`); }} versions={versions} onCreateVersion={handleCreateVersion} onRestoreVersion={handleRestoreVersion} />
+          <TrackList readOnly={!canEdit} tracks={tracks} onAddTrack={handleAddTrack} onRenameTrack={handleRenameTrack} onToggleMute={handleToggleMute} onToggleSolo={handleToggleSolo} onSetVolume={handleSetTrackVolume} onDeleteTrack={handleDeleteTrack} />
+          <WorkstationTimeline readOnly={!canEdit} tracks={tracks} regions={timelineRegions} notes={notes} uploadedFileName={uploadedFileName} waveformPeaks={waveformPeaks} audioClips={audioClips} playheadPosition={playheadPosition} onSelectionAction={handleSelectionAction} onRegionsChange={handleRegionsChange} snapMode={snapMode} onPlayheadSeek={(position) => { setPlayheadPosition(position); setSeekRequest((current) => ({ id: (current?.id ?? 0) + 1, position })); }} />
+          <WorkstationInspector readOnly={!canEdit} notes={notes} events={events} copilot={copilotPanel} onSendNote={handleSendNote} onResolveNote={handleResolveNote} onDeleteNote={handleDeleteNote} onSelectNote={(position) => { setPlayheadPosition(position); setSeekRequest((current) => ({ id: (current?.id ?? 0) + 1, position })); setSyncStatus(`Jumped to note at ${Math.round(position)}%`); }} versions={versions} onCreateVersion={handleCreateVersion} onRestoreVersion={handleRestoreVersion} />
         </div>
 
         <div className="shrink-0 border-t border-[#18202a]/12 bg-[#f6f4ef] text-[#172033]">
           <button type="button" className="flex h-12 w-full items-center justify-between px-5 text-sm" onClick={()=>setIsClipLibraryOpen((value)=>!value)}><span className="font-semibold">{isClipLibraryOpen ? "Hide clips" : "Clips"} <span className="ml-1 font-normal text-[#172033]/42">{audioClips.length}</span></span><span className="text-xs text-[#172033]/42">Upload stems and send clips to Copilot</span></button>
-          {isClipLibraryOpen ? <div className="max-h-[300px] overflow-y-auto border-t border-[#18202a]/10 p-3"><ClipLibrary roomId={roomId} clips={audioClips} tracks={tracks} isUploading={isUploadingClip} onUpload={handleClipUpload} onDelete={handleClipDelete} onAddToTimeline={handleAddClipToTimeline} onUseForAI={(clip)=>{setCopilotSourceClip(clip);setSyncStatus(`${clip.name} selected as Music Copilot context`);}} /></div> : null}
+          {isClipLibraryOpen ? <div className="max-h-[300px] overflow-y-auto border-t border-[#18202a]/10 p-3"><ClipLibrary readOnly={!canEdit} roomId={roomId} clips={audioClips} tracks={tracks} isUploading={isUploadingClip} onUpload={handleClipUpload} onDelete={handleClipDelete} onAddToTimeline={handleAddClipToTimeline} onUseForAI={(clip)=>{setCopilotSourceClip(clip);setSyncStatus(`${clip.name} selected as Music Copilot context`);}} /></div> : null}
         </div>
       </section>
     </main>

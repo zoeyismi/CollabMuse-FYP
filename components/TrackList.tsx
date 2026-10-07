@@ -5,6 +5,7 @@ import { Pencil, Plus, Trash2 } from "@/components/Icons";
 import type { Track } from "@/lib/mock-data";
 
 type TrackListProps = {
+  readOnly?: boolean;
   tracks: Track[];
   onAddTrack: () => void;
   onRenameTrack: (trackId: string, name: string) => void;
@@ -15,6 +16,7 @@ type TrackListProps = {
 };
 
 export function TrackList({
+  readOnly = false,
   tracks,
   onAddTrack,
   onRenameTrack,
@@ -57,7 +59,7 @@ export function TrackList({
             type="button"
             className="grid h-8 w-8 place-items-center rounded-[8px] text-[#172033]/58 transition hover:bg-[#172033]/8"
             onClick={onAddTrack}
-            disabled={tracks.length >= 12}
+            disabled={readOnly || tracks.length >= 12}
             title="Add track"
           >
             <Plus className="h-4 w-4" />
@@ -103,6 +105,7 @@ export function TrackList({
                   type="button"
                   className="hidden h-7 w-7 place-items-center rounded-full text-[#071014]/44 transition hover:bg-[#071014]/8 hover:text-[#071014] xl:grid"
                   onClick={() => startRename(track)}
+                  disabled={readOnly}
                   title="Rename track"
                 >
                   <Pencil className="h-3.5 w-3.5" />
@@ -111,7 +114,7 @@ export function TrackList({
                   type="button"
                   className="hidden h-7 w-7 place-items-center rounded-full text-[#071014]/34 transition hover:bg-[#b71912]/10 hover:text-[#b71912] disabled:cursor-not-allowed disabled:opacity-20 xl:grid"
                   onClick={() => onDeleteTrack(track.id)}
-                  disabled={tracks.length <= 1}
+                  disabled={readOnly || tracks.length <= 1}
                   title="Delete track"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
@@ -119,8 +122,8 @@ export function TrackList({
               </div>
             </div>
             <div className="mt-3 flex items-center gap-2 pl-5">
-              <button type="button" onClick={() => onToggleMute(track.id)} className={`grid h-6 w-6 place-items-center rounded-[5px] text-[10px] font-semibold ${track.muted ? "bg-[#184eb6] text-white" : "border border-[#18202a]/12 text-[#172033]/48"}`} title={track.muted ? "Unmute track" : "Mute track"}>M</button>
-              <button type="button" onClick={() => onToggleSolo(track.id)} className={`grid h-6 w-6 place-items-center rounded-[5px] text-[10px] font-semibold ${track.solo ? "bg-[#172033] text-white" : "border border-[#18202a]/12 text-[#172033]/48"}`} title={track.solo ? "Disable solo" : "Solo track"}>S</button>
+              <button type="button" disabled={readOnly} onClick={() => onToggleMute(track.id)} className={`grid h-6 w-6 place-items-center rounded-[5px] text-[10px] font-semibold disabled:opacity-35 ${track.muted ? "bg-[#184eb6] text-white" : "border border-[#18202a]/12 text-[#172033]/48"}`} title={track.muted ? "Unmute track" : "Mute track"}>M</button>
+              <button type="button" disabled={readOnly} onClick={() => onToggleSolo(track.id)} className={`grid h-6 w-6 place-items-center rounded-[5px] text-[10px] font-semibold disabled:opacity-35 ${track.solo ? "bg-[#172033] text-white" : "border border-[#18202a]/12 text-[#172033]/48"}`} title={track.solo ? "Disable solo" : "Solo track"}>S</button>
               <input
                 type="range"
                 min="0"
@@ -132,6 +135,7 @@ export function TrackList({
                 onKeyUp={(event) => onSetVolume(track.id, Number(event.currentTarget.value))}
                 className="h-1 min-w-0 flex-1 accent-[#184eb6]"
                 aria-label={`${track.name} volume`}
+                disabled={readOnly}
               />
               <span className="w-8 text-right text-[9px] tabular-nums text-[#172033]/38">{Math.round((volumeDrafts[track.id] ?? track.volume ?? 0.8) * 100)}</span>
             </div>

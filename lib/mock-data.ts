@@ -111,6 +111,16 @@ export type AudioClip = {
     energy: "low" | "medium" | "high";
     dynamics: "steady" | "varied";
   };
+  generation?: {
+    provider: "collabmuse" | "elevenlabs";
+    model: string;
+    prompt: string;
+    style: string;
+    mood: string;
+    key: string;
+    instrumental: boolean;
+    songId?: string;
+  };
 };
 
 export const initialTracks: Track[] = [
@@ -138,6 +148,9 @@ export type RoomNote = {
   message: string;
   time: string;
   position?: number;
+  resolved?: boolean;
+  resolvedBy?: string;
+  resolvedAt?: string;
 };
 
 export type TimelineRegion = {

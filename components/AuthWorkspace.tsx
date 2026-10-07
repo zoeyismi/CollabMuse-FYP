@@ -10,6 +10,11 @@ export function AuthWorkspace() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const initialMode = searchParams.get("mode") === "login" ? "login" : "register";
+  const requestedReturnTo = searchParams.get("returnTo") ?? "";
+  const returnTo = requestedReturnTo.startsWith("/") && !requestedReturnTo.startsWith("//")
+    ? requestedReturnTo
+    : "/dashboard";
+  const isInvitation = returnTo.includes("invite=");
   const [mode, setMode] = useState<"login" | "register">(initialMode);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -32,7 +37,7 @@ export function AuthWorkspace() {
       });
       const data = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(data.error ?? "Unable to continue");
-      router.push("/dashboard");
+      router.push(returnTo);
       router.refresh();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Unable to continue");
@@ -70,7 +75,9 @@ export function AuthWorkspace() {
           </div>
           <h1 className="mt-10 text-center text-3xl font-medium text-[#111820]">{title}</h1>
           <p className="mt-3 text-center text-sm leading-6 text-[#111820]/55">
-            {mode === "login" ? "Continue to your saved rooms and live sessions." : "Start with a private account. Invite collaborators room by room."}
+            {isInvitation
+              ? "Sign in to accept the room invitation. You will return to the shared workspace automatically."
+              : mode === "login" ? "Continue to your saved rooms and live sessions." : "Start with a private account. Invite collaborators room by room."}
           </p>
 
           <form className="mx-auto mt-9 max-w-lg space-y-4" onSubmit={submit}>

@@ -16,6 +16,7 @@ type RoomSummary = {
   uploadedFileName?: string;
   events?: unknown[];
   notes?: unknown[];
+  currentRole?: "owner" | "editor" | "viewer";
 };
 
 function roomIdFromTitle(title: string) {
@@ -232,6 +233,7 @@ export default function DashboardPage() {
                       style={{ background: ["#235fba", "#b71912", "#efd84c", "#58e081"][index % 4] }}
                     />
                     <h3 className="mt-5 text-sm font-semibold text-white">{room.title}</h3>
+                    <span className="mt-2 inline-flex rounded-full border border-white/10 bg-white/[0.06] px-2 py-1 text-[10px] font-medium capitalize text-white/52">{room.currentRole ?? "viewer"}</span>
                     <p className="mt-2 truncate text-xs text-white/46">{room.uploadedFileName || "No audio uploaded"}</p>
                     <p className="mt-3 text-[11px] text-white/30">
                       {room.events?.length ?? 0} events · {room.notes?.length ?? 0} notes
@@ -239,8 +241,8 @@ export default function DashboardPage() {
                   </Link>
                   <div className="absolute right-3 top-3 flex items-center gap-1 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">
                     <button type="button" className="grid h-8 w-8 place-items-center rounded-full text-white/30 transition hover:bg-white/10 hover:text-white" onClick={() => duplicateRoom(room)} disabled={workingRoomId === room.id} title="Duplicate room"><Copy className="h-4 w-4" /></button>
-                    <button type="button" className="grid h-8 w-8 place-items-center rounded-full text-white/30 transition hover:bg-white/10 hover:text-white" onClick={() => renameRoom(room)} disabled={workingRoomId === room.id} title="Rename room"><Pencil className="h-4 w-4" /></button>
-                  {room.id !== "demo" ? (
+                    {room.currentRole === "owner" ? <button type="button" className="grid h-8 w-8 place-items-center rounded-full text-white/30 transition hover:bg-white/10 hover:text-white" onClick={() => renameRoom(room)} disabled={workingRoomId === room.id} title="Rename room"><Pencil className="h-4 w-4" /></button> : null}
+                  {room.id !== "demo" && room.currentRole === "owner" ? (
                     <button
                       type="button"
                       className="grid h-8 w-8 place-items-center rounded-full text-white/30 transition hover:bg-white/10 hover:text-white"

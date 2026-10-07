@@ -4,6 +4,7 @@ import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import next from "next";
 import { Server } from "socket.io";
+import { renderLocalMusic } from "./lib/local-music-engine.mjs";
 
 const dev = process.env.NODE_ENV !== "production";
 const hostname = "0.0.0.0";
@@ -179,6 +180,11 @@ function canAccessRoom(room, user) {
   return room.ownerId === user.id || (room.members ?? []).some((member) => member.userId === user.id);
 }
 
+function roomAccessRole(room, user) {
+  if (room.id === "demo" || !room.ownerId || room.ownerId === user?.id) return "owner";
+  return (room.members ?? []).find((member) => member.userId === user?.id)?.role ?? "viewer";
+}
+
 function isRoomOwner(room, user) {
   return room.id === "demo" || !room.ownerId || Boolean(user && room.ownerId === user.id);
 }
@@ -282,6 +288,10 @@ async function appendNote(roomId, note) {
   const exists = room.notes.some((item) => item.id === note.id);
   const notes = exists ? room.notes : [note, ...room.notes].slice(0, 30);
   return ensureRoom(roomId, { notes });
+}
+
+async function updateNotes(roomId, notes) {
+  return ensureRoom(roomId, { notes: notes.slice(0, 30) });
 }
 
 async function updateUpload(roomId, fileName, waveformPeaks = null, audioAvailable) {
@@ -476,6 +486,7 @@ function publicAudioClips(clips = []) {
     createdAt: clip.createdAt,
     analysis: clip.analysis,
     waveformPeaks: clip.waveformPeaks ?? [],
+    generation: clip.generation ?? undefined,
   }));
 }
 
@@ -551,7 +562,11 @@ async function handleApi(req, res, pathname) {
   if (pathname === "/api/rooms" && req.method === "GET") {
     const store = await readStore();
     const user = await getSessionUser(req);
-    sendJson(res, 200, { rooms: Object.values(store.rooms).filter((room) => canAccessRoom(room, user)) });
+    sendJson(res, 200, {
+      rooms: Object.values(store.rooms)
+        .filter((room) => canAccessRoom(room, user))
+        .map((room) => ({ ...room, currentRole: roomAccessRole(room, user) })),
+    });
     return true;
   }
 
@@ -623,7 +638,10 @@ async function handleApi(req, res, pathname) {
       sendJson(res, 403, { error: "This invitation is invalid or expired" });
       return true;
     }
-    const member = { userId: user.id, name: user.name, email: user.email, role: invite.role ?? "editor", joinedAt: new Date().toISOString() };
+    const existingMember = (room.members ?? []).find((item) => item.userId === user.id);
+    const invitedRole = invite.role === "viewer" ? "viewer" : "editor";
+    const role = existingMember?.role === "editor" ? "editor" : invitedRole;
+    const member = { userId: user.id, name: user.name, email: user.email, role, joinedAt: existingMember?.joinedAt ?? new Date().toISOString() };
     const members = [...(room.members ?? []).filter((item) => item.userId !== user.id), member];
     const joinedRoom = await ensureRoom(roomId, { members });
     sendJson(res, 200, { room: joinedRoom, member });
@@ -638,9 +656,11 @@ async function handleApi(req, res, pathname) {
       sendJson(res, 403, { error: "Only the room owner can invite collaborators" });
       return true;
     }
+    const body = await readBody(req);
+    const role = body.role === "viewer" ? "viewer" : "editor";
     const invite = {
       token: randomBytes(18).toString("hex"),
-      role: "editor",
+      role,
       createdAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
     };
@@ -659,7 +679,7 @@ async function handleApi(req, res, pathname) {
     sendJson(res, 200, {
       owner: { userId: room.ownerId, name: room.ownerName ?? "Room owner", role: "owner" },
       members: room.members ?? [],
-      currentRole: isRoomOwner(room, user) ? "owner" : (room.members ?? []).find((member) => member.userId === user?.id)?.role ?? "viewer",
+      currentRole: roomAccessRole(room, user),
     });
     return true;
   }
@@ -878,6 +898,7 @@ async function handleApi(req, res, pathname) {
   }
 
   const noteMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/notes$/);
+  const noteItemMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/notes\/([^/]+)$/);
   if (noteMatch && req.method === "GET") {
     const room = await ensureRoom(noteMatch[1]);
     sendJson(res, 200, { notes: room.notes });
@@ -897,6 +918,48 @@ async function handleApi(req, res, pathname) {
     return true;
   }
 
+  if (noteItemMatch && req.method === "PATCH") {
+    const roomId = decodeURIComponent(noteItemMatch[1]);
+    const noteId = decodeURIComponent(noteItemMatch[2]);
+    const room = await ensureRoom(roomId);
+    const body = await readBody(req);
+    const resolved = Boolean(body.resolved);
+    let found = false;
+    const notes = (room.notes ?? []).map((note) => {
+      if (note.id !== noteId) return note;
+      found = true;
+      return {
+        ...note,
+        resolved,
+        resolvedBy: resolved ? String(body.resolvedBy ?? "A collaborator").slice(0, 60) : undefined,
+        resolvedAt: resolved ? new Date().toISOString() : undefined,
+      };
+    });
+    if (!found) {
+      sendJson(res, 404, { error: "Note not found" });
+      return true;
+    }
+    const nextRoom = await updateNotes(roomId, notes);
+    if (body.event) await appendEvent(roomId, body.event);
+    sendJson(res, 200, { notes: nextRoom.notes, event: body.event });
+    return true;
+  }
+
+  if (noteItemMatch && req.method === "DELETE") {
+    const roomId = decodeURIComponent(noteItemMatch[1]);
+    const noteId = decodeURIComponent(noteItemMatch[2]);
+    const room = await ensureRoom(roomId);
+    if (!(room.notes ?? []).some((note) => note.id === noteId)) {
+      sendJson(res, 404, { error: "Note not found" });
+      return true;
+    }
+    const body = await readBody(req);
+    const nextRoom = await updateNotes(roomId, (room.notes ?? []).filter((note) => note.id !== noteId));
+    if (body.event) await appendEvent(roomId, body.event);
+    sendJson(res, 200, { notes: nextRoom.notes, event: body.event });
+    return true;
+  }
+
   const timelineMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/timeline$/);
   if (timelineMatch && req.method === "GET") {
     const room = await ensureRoom(timelineMatch[1]);
@@ -908,6 +971,142 @@ async function handleApi(req, res, pathname) {
   if (tracksMatch && req.method === "GET") {
     const room = await ensureRoom(tracksMatch[1]);
     sendJson(res, 200, { tracks: room.tracks ?? initialTracks });
+    return true;
+  }
+
+  const generateMusicMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/generate-music$/);
+  if (generateMusicMatch && req.method === "POST") {
+    const roomId = decodeURIComponent(generateMusicMatch[1]);
+    const body = await readBody(req);
+    const prompt = String(body.prompt ?? "").trim().slice(0, 3500);
+    if (prompt.length < 8) {
+      sendJson(res, 400, { error: "Describe the music you want in at least 8 characters." });
+      return true;
+    }
+
+    const style = String(body.style ?? "R&B").trim().slice(0, 80);
+    const mood = String(body.mood ?? "warm").trim().slice(0, 80);
+    const musicKey = String(body.key ?? "C major").trim().slice(0, 24);
+    const durationSeconds = Math.max(10, Math.min(120, Number(body.durationSeconds) || 30));
+    const instrumental = body.instrumental !== false;
+    const requestedProvider = body.provider === "elevenlabs" ? "elevenlabs" : "collabmuse";
+    const room = await ensureRoom(roomId);
+    let audioBuffer;
+    let mimeType;
+    let fileExtension;
+    let provider;
+    let model;
+    let songId;
+    let fallbackReason;
+
+    if (requestedProvider === "elevenlabs" && process.env.ELEVENLABS_API_KEY) {
+      const fullPrompt = [
+        prompt,
+        `${style} style`,
+        `${mood} mood`,
+        `${musicKey}`,
+        `${room.bpm ?? 96} BPM`,
+        instrumental ? "instrumental only, no vocals or lyrics" : "vocals are allowed when musically appropriate",
+        "original composition, polished production, clear beginning and ending",
+      ].join(". ");
+      try {
+        const response = await fetch("https://api.elevenlabs.io/v1/music?output_format=mp3_44100_128", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "xi-api-key": process.env.ELEVENLABS_API_KEY,
+          },
+          body: JSON.stringify({
+            prompt: fullPrompt,
+            music_length_ms: Math.round(durationSeconds * 1000),
+            model_id: process.env.ELEVENLABS_MUSIC_MODEL ?? "music_v2_5",
+            force_instrumental: instrumental,
+          }),
+        });
+        if (response.ok) {
+          audioBuffer = Buffer.from(await response.arrayBuffer());
+          mimeType = response.headers.get("content-type") || "audio/mpeg";
+          fileExtension = "mp3";
+          provider = "elevenlabs";
+          model = process.env.ELEVENLABS_MUSIC_MODEL ?? "music_v2_5";
+          songId = response.headers.get("song-id") || undefined;
+        } else {
+          const detail = (await response.text()).slice(0, 1200);
+          console.error(`ElevenLabs Music returned ${response.status}:`, detail);
+          fallbackReason = response.status === 402
+            ? "ElevenLabs requires a paid plan; generated with the CollabMuse engine instead."
+            : "ElevenLabs was unavailable; generated with the CollabMuse engine instead.";
+        }
+      } catch (error) {
+        console.error("ElevenLabs Music request failed:", error);
+        fallbackReason = "ElevenLabs was unavailable; generated with the CollabMuse engine instead.";
+      }
+    } else if (requestedProvider === "elevenlabs") {
+      fallbackReason = "ElevenLabs is not configured; generated with the CollabMuse engine instead.";
+    }
+
+    if (!audioBuffer) {
+      const rendered = renderLocalMusic({
+        prompt,
+        style,
+        mood,
+        key: musicKey,
+        durationSeconds,
+        bpm: room.bpm ?? 96,
+      });
+      audioBuffer = rendered.buffer;
+      mimeType = "audio/wav";
+      fileExtension = "wav";
+      provider = "collabmuse";
+      model = rendered.model;
+    }
+
+    if (audioBuffer.length === 0 || audioBuffer.length > maxAudioBytes) {
+      sendJson(res, 502, { error: "The music engine returned an invalid audio file." });
+      return true;
+    }
+
+    const clipId = `clip-${Date.now()}-${randomBytes(3).toString("hex")}`;
+    const trackId = `ai-music-${Date.now().toString(36)}`;
+    const titleBase = `${mood}-${style}-AI-track`;
+    const fileName = `${safePathSegment(titleBase, "ai-music")}.${fileExtension}`;
+    const storageName = `${clipId}-${fileName}`;
+    const roomDirectory = path.join(uploadsDir, safePathSegment(roomId, "room"));
+    await mkdir(roomDirectory, { recursive: true });
+    await writeFile(path.join(roomDirectory, storageName), audioBuffer);
+
+    const clip = {
+      id: clipId,
+      name: fileName,
+      trackId,
+      duration: durationSeconds,
+      storageName,
+      mimeType,
+      createdAt: new Date().toISOString(),
+      analysis: {
+        bpm: room.bpm ?? 96,
+        loudnessDb: 0,
+        energy: /energetic|bright|intense/i.test(mood) ? "high" : /calm|soft|ambient/i.test(`${mood} ${style}`) ? "low" : "medium",
+        dynamics: "varied",
+      },
+      waveformPeaks: [],
+      generation: {
+        provider,
+        model,
+        prompt,
+        style,
+        mood,
+        key: musicKey,
+        instrumental,
+        songId,
+      },
+    };
+    await updateAudioClips(roomId, [...(room.audioClips ?? []), clip].slice(-24));
+    sendJson(res, 201, {
+      clip: publicAudioClips([clip])[0],
+      audioUrl: `/api/rooms/${encodeURIComponent(roomId)}/clips/${encodeURIComponent(clip.id)}/audio`,
+      fallbackReason,
+    });
     return true;
   }
 
@@ -1170,6 +1369,13 @@ io.on("connection", (socket) => {
     await appendNote(roomId, note);
     if (event) await appendEvent(roomId, event);
     socket.to(roomId).emit("room:note", { note, event });
+  });
+
+  socket.on("room:notes", async ({ roomId = "demo", notes, event }) => {
+    if (!socket.data.canEdit || socket.data.roomId !== roomId || !Array.isArray(notes)) return;
+    await updateNotes(roomId, notes);
+    if (event) await appendEvent(roomId, event);
+    socket.to(roomId).emit("room:notes", { notes, event });
   });
 
   socket.on("room:timeline", async ({ roomId = "demo", timelineRegions, event }) => {

@@ -5,6 +5,7 @@ import { AudioWaveform, Circle, Download, Pause, Play, SkipBack, SkipForward, Up
 import type { AudioClip, TimelineRegion, Track } from "@/lib/mock-data";
 
 type ControlPanelProps = {
+  readOnly?: boolean;
   uploadedFileName: string;
   uploadedAudioUrl: string | null;
   onAudioUpload: (file: File) => void;
@@ -64,7 +65,7 @@ function audioBufferToWav(buffer: AudioBuffer) {
   return new Blob([arrayBuffer], { type: "audio/wav" });
 }
 
-export function ControlPanel({ uploadedFileName, uploadedAudioUrl, onAudioUpload, roomId, tracks, regions, audioClips, onPlayheadChange, snapMode, onSnapModeChange, seekRequest, transportCommand, onTransportAction, onRecordedClip, bpm, timeSignature, onSessionSettingsChange }: ControlPanelProps) {
+export function ControlPanel({ readOnly = false, uploadedFileName, uploadedAudioUrl, onAudioUpload, roomId, tracks, regions, audioClips, onPlayheadChange, snapMode, onSnapModeChange, seekRequest, transportCommand, onTransportAction, onRecordedClip, bpm, timeSignature, onSessionSettingsChange }: ControlPanelProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const clipAudioRefs = useRef(new Map<string, HTMLAudioElement>());
   const clipTimersRef = useRef<number[]>([]);
@@ -376,7 +377,7 @@ export function ControlPanel({ uploadedFileName, uploadedAudioUrl, onAudioUpload
   };
 
   const startRecording = async () => {
-    if (!onRecordedClip || !recordingTrackId || recordingStatus === "requesting") return;
+    if (readOnly || !onRecordedClip || !recordingTrackId || recordingStatus === "requesting") return;
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       setRecordingStatus("error");
       return;
@@ -436,8 +437,8 @@ export function ControlPanel({ uploadedFileName, uploadedAudioUrl, onAudioUpload
       </div>
       <div className="min-w-[120px] text-sm font-semibold tabular-nums">{formatTime(currentTime)} <span className="font-normal text-[#172033]/36">/ {formatTime(timelineDuration)}</span></div>
       <div className="hidden h-8 w-px bg-[#18202a]/10 md:block" />
-      <label className="flex items-center gap-1 rounded-[8px] border border-[#18202a]/10 bg-white/40 px-2 py-1.5 text-xs font-medium"><input type="number" min="40" max="220" value={bpm} onChange={(event) => onSessionSettingsChange({ bpm: Math.max(40, Math.min(220, Number(event.target.value) || 96)), timeSignature })} className="w-10 bg-transparent text-right outline-none" aria-label="Tempo BPM" /> BPM</label>
-      <select value={timeSignature} onChange={(event) => onSessionSettingsChange({ bpm, timeSignature: event.target.value })} className="rounded-[8px] border border-[#18202a]/10 bg-white/40 px-2 py-2 text-xs font-medium" aria-label="Time signature"><option>4/4</option><option>3/4</option><option>6/8</option></select>
+      <label className="flex items-center gap-1 rounded-[8px] border border-[#18202a]/10 bg-white/40 px-2 py-1.5 text-xs font-medium"><input type="number" min="40" max="220" value={bpm} disabled={readOnly} onChange={(event) => onSessionSettingsChange({ bpm: Math.max(40, Math.min(220, Number(event.target.value) || 96)), timeSignature })} className="w-10 bg-transparent text-right outline-none" aria-label="Tempo BPM" /> BPM</label>
+      <select value={timeSignature} disabled={readOnly} onChange={(event) => onSessionSettingsChange({ bpm, timeSignature: event.target.value })} className="rounded-[8px] border border-[#18202a]/10 bg-white/40 px-2 py-2 text-xs font-medium" aria-label="Time signature"><option>4/4</option><option>3/4</option><option>6/8</option></select>
       <select value={snapMode} onChange={(event) => onSnapModeChange(event.target.value as "Bar" | "Beat" | "Off")} className="rounded-[8px] border border-[#18202a]/10 bg-white/40 px-2 py-2 text-xs font-medium" aria-label="Timeline snap"><option value="Bar">Snap: Bar</option><option value="Beat">Snap: Beat</option><option value="Off">Snap: Off</option></select>
       <button type="button" onClick={() => setMetronomeOn((value) => !value)} className={`inline-flex items-center gap-1.5 rounded-[8px] border px-3 py-2 text-xs font-semibold transition ${metronomeOn ? "border-[#184eb6]/25 bg-[#184eb6] text-white" : "border-[#18202a]/10 bg-white/40 text-[#172033]/65"}`} title="Toggle audible metronome"><AudioWaveform className="h-3.5 w-3.5" />{metronomeOn ? "Click on" : "Metronome"}</button>
       <div className="flex items-center rounded-[8px] border border-[#18202a]/10 bg-white/40 p-0.5 text-[11px] font-semibold">
@@ -451,10 +452,10 @@ export function ControlPanel({ uploadedFileName, uploadedAudioUrl, onAudioUpload
       <span className="hidden max-w-[180px] truncate text-[11px] text-[#172033]/38 xl:block" title={uploadedFileName}>{uploadedFileName}</span>
       <button type="button" onClick={() => void exportMix()} disabled={!hasPlayableAudio || exportStatus === "exporting"} className="inline-flex items-center gap-2 rounded-[9px] border border-[#18202a]/14 bg-white/55 px-3 py-2 text-xs font-semibold transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-35" title="Export the audible timeline as WAV"><Download className="h-4 w-4" />{exportStatus === "exporting" ? "Mixing…" : exportStatus === "done" ? "Exported" : exportStatus === "error" ? "Export failed" : "Export WAV"}</button>
       {onRecordedClip ? <div className="flex items-center rounded-[9px] border border-[#18202a]/14 bg-white/55 p-0.5">
-        <select value={recordingTrackId} disabled={recordingStatus === "recording"} onChange={(event) => setRecordingTrackId(event.target.value)} className="max-w-[120px] bg-transparent px-2 py-1.5 text-[11px] outline-none" aria-label="Recording target track">{tracks.map((track) => <option key={track.id} value={track.id}>{track.name}</option>)}</select>
-        <button type="button" onClick={recordingStatus === "recording" ? stopRecording : () => void startRecording()} disabled={!recordingTrackId || recordingStatus === "requesting"} className={`inline-flex items-center gap-1.5 rounded-[7px] px-3 py-1.5 text-xs font-semibold transition disabled:opacity-40 ${recordingStatus === "recording" ? "bg-[#b42318] text-white" : "text-[#7f1d1d] hover:bg-[#b42318]/8"}`} title={recordingStatus === "recording" ? "Stop recording" : "Record microphone to selected track"}><Circle className={`h-3.5 w-3.5 ${recordingStatus === "recording" ? "fill-white" : "fill-[#b42318] text-[#b42318]"}`} />{recordingStatus === "requesting" ? "Mic…" : recordingStatus === "recording" ? `Stop ${formatTime(recordingSeconds)}` : recordingStatus === "error" ? "Mic blocked" : "Record"}</button>
+        <select value={recordingTrackId} disabled={readOnly || recordingStatus === "recording"} onChange={(event) => setRecordingTrackId(event.target.value)} className="max-w-[120px] bg-transparent px-2 py-1.5 text-[11px] outline-none" aria-label="Recording target track">{tracks.map((track) => <option key={track.id} value={track.id}>{track.name}</option>)}</select>
+        <button type="button" onClick={recordingStatus === "recording" ? stopRecording : () => void startRecording()} disabled={readOnly || !recordingTrackId || recordingStatus === "requesting"} className={`inline-flex items-center gap-1.5 rounded-[7px] px-3 py-1.5 text-xs font-semibold transition disabled:opacity-40 ${recordingStatus === "recording" ? "bg-[#b42318] text-white" : "text-[#7f1d1d] hover:bg-[#b42318]/8"}`} title={recordingStatus === "recording" ? "Stop recording" : "Record microphone to selected track"}><Circle className={`h-3.5 w-3.5 ${recordingStatus === "recording" ? "fill-white" : "fill-[#b42318] text-[#b42318]"}`} />{recordingStatus === "requesting" ? "Mic…" : recordingStatus === "recording" ? `Stop ${formatTime(recordingSeconds)}` : recordingStatus === "error" ? "Mic blocked" : "Record"}</button>
       </div> : null}
-      <label className="inline-flex cursor-pointer items-center gap-2 rounded-[9px] border border-[#18202a]/14 bg-white/55 px-4 py-2 text-xs font-semibold transition hover:bg-white"><Upload className="h-4 w-4" />Upload audio<input className="sr-only" type="file" accept="audio/*" onChange={(event)=>{const file=event.target.files?.[0];if(file)onAudioUpload(file);event.target.value="";}} /></label>
+      <label className={`inline-flex items-center gap-2 rounded-[9px] border border-[#18202a]/14 bg-white/55 px-4 py-2 text-xs font-semibold transition ${readOnly ? "cursor-not-allowed opacity-40" : "cursor-pointer hover:bg-white"}`}><Upload className="h-4 w-4" />Upload audio<input className="sr-only" type="file" accept="audio/*" disabled={readOnly} onChange={(event)=>{const file=event.target.files?.[0];if(file)onAudioUpload(file);event.target.value="";}} /></label>
     </div>
   );
 }

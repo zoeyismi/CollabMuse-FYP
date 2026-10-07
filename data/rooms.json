@@ -10,6 +10,34 @@
       "waveformPeaks": null,
       "events": [
         {
+          "id": "1791344571699-kr40g3ckfdi",
+          "kind": "remix",
+          "title": "AI music added to workstation",
+          "detail": "Guest creator added energetic-Electronic-AI-track.wav as a playable audio track.",
+          "time": "11:42"
+        },
+        {
+          "id": "1791344530013-2dl5innnt3b",
+          "kind": "remix",
+          "title": "AI music generated",
+          "detail": "Guest creator generated 15 seconds of real audio with CollabMuse Composer.",
+          "time": "11:42"
+        },
+        {
+          "id": "1791341956025-ge8zxn5969",
+          "kind": "remix",
+          "title": "AI music added to workstation",
+          "detail": "Guest creator added warm-R-B-AI-track.wav as a playable audio track.",
+          "time": "10:59"
+        },
+        {
+          "id": "1791341930256-jsiifsb4u5",
+          "kind": "remix",
+          "title": "AI music generated",
+          "detail": "Guest creator generated 30 seconds of real audio with CollabMuse Composer.",
+          "time": "10:58"
+        },
+        {
           "id": "1791028432237-2yru5i6mqrj",
           "kind": "remix",
           "title": "AI melody rendered to audio",
@@ -100,6 +128,30 @@
           "left": 78,
           "width": 16,
           "color": "#58e081"
+        },
+        {
+          "id": "region-clip-1791341930250-eb4a06",
+          "clipId": "clip-1791341930250-eb4a06",
+          "lane": 4,
+          "label": "warm-R-B-AI-track.wav",
+          "actionLabel": "Move clip",
+          "left": 4,
+          "width": 15,
+          "color": "#235fba",
+          "sourceOffset": 0,
+          "sourceDuration": 30
+        },
+        {
+          "id": "region-clip-1791344530000-3adb5a",
+          "clipId": "clip-1791344530000-3adb5a",
+          "lane": 5,
+          "label": "energetic-Electronic-AI-track.wav",
+          "actionLabel": "Move clip",
+          "left": 4,
+          "width": 10,
+          "color": "#235fba",
+          "sourceOffset": 0,
+          "sourceDuration": 15
         }
       ],
       "tracks": [
@@ -138,13 +190,84 @@
           "solo": false,
           "volume": 0.74,
           "clips": 2
+        },
+        {
+          "id": "ai-music-muxiqfij",
+          "name": "warm R B AI track",
+          "color": "#235fba",
+          "muted": false,
+          "solo": false,
+          "volume": 0.8,
+          "clips": 1,
+          "source": "ai"
+        },
+        {
+          "id": "ai-music-muxka5hs",
+          "name": "energetic Electronic AI track",
+          "color": "#235fba",
+          "muted": false,
+          "solo": false,
+          "volume": 0.8,
+          "clips": 1,
+          "source": "ai"
         }
       ],
       "composition": null,
-      "audioClips": [],
+      "audioClips": [
+        {
+          "id": "clip-1791341930250-eb4a06",
+          "name": "warm-R-B-AI-track.wav",
+          "trackId": "ai-music-muxiqfij",
+          "duration": 30,
+          "storageName": "clip-1791341930250-eb4a06-warm-R-B-AI-track.wav",
+          "mimeType": "audio/wav",
+          "createdAt": "2026-10-07T02:58:50.255Z",
+          "analysis": {
+            "bpm": 96,
+            "loudnessDb": 0,
+            "energy": "medium",
+            "dynamics": "varied"
+          },
+          "waveformPeaks": [],
+          "generation": {
+            "provider": "collabmuse",
+            "model": "collabmuse-arranger-v1",
+            "prompt": "A warm late-night R&B instrumental with soft electric piano, restrained drums, rounded bass, and a memorable original hook",
+            "style": "R&B",
+            "mood": "warm",
+            "key": "C major",
+            "instrumental": true
+          }
+        },
+        {
+          "id": "clip-1791344530000-3adb5a",
+          "name": "energetic-Electronic-AI-track.wav",
+          "trackId": "ai-music-muxka5hs",
+          "duration": 15,
+          "storageName": "clip-1791344530000-3adb5a-energetic-Electronic-AI-track.wav",
+          "mimeType": "audio/wav",
+          "createdAt": "2026-10-07T03:42:10.001Z",
+          "analysis": {
+            "bpm": 96,
+            "loudnessDb": 0,
+            "energy": "high",
+            "dynamics": "varied"
+          },
+          "waveformPeaks": [],
+          "generation": {
+            "provider": "collabmuse",
+            "model": "collabmuse-arranger-v1",
+            "prompt": "An energetic electronic collaboration sketch with pulsing bass, syncopated drums, shimmering chords, and a clear uplifting hook",
+            "style": "Electronic",
+            "mood": "energetic",
+            "key": "E minor",
+            "instrumental": true
+          }
+        }
+      ],
       "versions": [],
       "createdAt": "2026-10-03T11:52:10.746Z",
-      "updatedAt": "2026-10-04T06:18:52.830Z",
+      "updatedAt": "2026-10-07T03:42:51.729Z",
       "members": [],
       "invites": [],
       "bpm": 96,

@@ -5,6 +5,7 @@ import { Play, Plus, Trash2, Upload } from "@/components/Icons";
 import type { AudioClip, Track } from "@/lib/mock-data";
 
 type ClipLibraryProps = {
+  readOnly?: boolean;
   roomId: string;
   clips: AudioClip[];
   tracks: Track[];
@@ -20,7 +21,7 @@ function formatDuration(seconds: number) {
   return `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
 }
 
-export function ClipLibrary({ roomId, clips, tracks, isUploading, onUpload, onDelete, onUseForAI, onAddToTimeline }: ClipLibraryProps) {
+export function ClipLibrary({ readOnly = false, roomId, clips, tracks, isUploading, onUpload, onDelete, onUseForAI, onAddToTimeline }: ClipLibraryProps) {
   const [trackId, setTrackId] = useState(tracks[0]?.id ?? "track");
 
   return (
@@ -35,17 +36,18 @@ export function ClipLibrary({ roomId, clips, tracks, isUploading, onUpload, onDe
             className="rounded-[8px] border border-[#18202a]/12 bg-white/55 px-4 py-2 text-xs text-[#172033]"
             value={trackId}
             onChange={(event) => setTrackId(event.target.value)}
+            disabled={readOnly}
           >
             {tracks.map((track) => <option key={track.id} value={track.id}>{track.name}</option>)}
           </select>
-          <label className="inline-flex cursor-pointer items-center gap-2 rounded-[8px] bg-[#184eb6] px-4 py-2 text-xs font-semibold text-white transition hover:bg-[#123f91]">
+          <label className={`inline-flex items-center gap-2 rounded-[8px] bg-[#184eb6] px-4 py-2 text-xs font-semibold text-white transition ${readOnly ? "cursor-not-allowed opacity-40" : "cursor-pointer hover:bg-[#123f91]"}`}>
             <Upload className="h-4 w-4" />
             {isUploading ? "Uploading..." : "Add clip"}
             <input
               className="sr-only"
               type="file"
               accept="audio/*"
-              disabled={isUploading}
+              disabled={readOnly || isUploading}
               onChange={(event) => {
                 const file = event.target.files?.[0];
                 if (file) onUpload(file, trackId);
@@ -82,6 +84,7 @@ export function ClipLibrary({ roomId, clips, tracks, isUploading, onUpload, onDe
                 className="inline-flex shrink-0 items-center gap-1 rounded-[7px] bg-[#184eb6] px-3 py-1.5 text-[10px] font-semibold text-white transition hover:bg-[#123f91]"
                 onClick={() => onAddToTimeline(clip)}
                 title="Add another instance of this clip to the timeline"
+                disabled={readOnly}
               >
                 <Plus className="h-3.5 w-3.5" />Timeline
               </button>
@@ -90,6 +93,7 @@ export function ClipLibrary({ roomId, clips, tracks, isUploading, onUpload, onDe
                 className="shrink-0 rounded-[7px] border border-[#18202a]/10 bg-white/55 px-3 py-1.5 text-[10px] font-semibold text-[#172033]/58 transition hover:bg-white"
                 onClick={() => onUseForAI(clip)}
                 title="Use this clip as Music Copilot context"
+                disabled={readOnly}
               >
                 AI context
               </button>
@@ -98,6 +102,7 @@ export function ClipLibrary({ roomId, clips, tracks, isUploading, onUpload, onDe
                 className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-[#172033]/32 transition hover:bg-[#172033]/8 hover:text-[#172033]"
                 onClick={() => onDelete(clip)}
                 title="Delete clip"
+                disabled={readOnly}
               >
                 <Trash2 className="h-4 w-4" />
               </button>
