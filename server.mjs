@@ -1,22 +1,58 @@
 import { createServer } from "node:http";
-import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { Worker } from "node:worker_threads";
+import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import next from "next";
 import { Server } from "socket.io";
-import { renderLocalMusic } from "./lib/local-music-engine.mjs";
+import { Zip, ZipPassThrough, strFromU8, strToU8, unzipSync } from "fflate";
+import { createJsonStore } from "./lib/json-store.mjs";
+import { mergeRoomEdits } from "./lib/merge-room-edits.mjs";
+import { getUploadEpoch } from "./lib/upload-epoch.mjs";
+import { discardMusicErrorResponse, readBoundedJson, readMp3Response } from "./lib/music-provider.mjs";
+import { preserveRemovedRegionNotePositions, remapMergedNotes, remapSplitNotes } from "./lib/split-note-remap.mjs";
+import { audioRange } from "./lib/audio-range.mjs";
+import { MAX_AUDIO_BYTES } from "./lib/audio-limits.mjs";
+import { createMusicWorkerRunner } from "./lib/music-worker-runner.mjs";
+import { createBackupVerifier } from "./lib/backup-verifier.mjs";
+import { readJsonRequest } from "./lib/json-request.mjs";
+import { readBinaryRequest } from "./lib/binary-request.mjs";
+import { validateTimingPatch } from "./lib/session-timing.mjs";
+import { referenceTempo } from "./lib/reference-tempo.mjs";
 
 const dev = process.env.NODE_ENV !== "production";
-const hostname = "0.0.0.0";
+const hostname = process.env.HOSTNAME_BIND || "0.0.0.0";
 const port = Number(process.env.PORT ?? 3000);
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
-const dataDir = path.join(process.cwd(), "data");
+const dataDir = process.env.COLLABMUSE_DATA_DIR ? path.resolve(process.env.COLLABMUSE_DATA_DIR) : path.join(process.cwd(), "data");
 const storePath = path.join(dataDir, "rooms.json");
 const authStorePath = path.join(dataDir, "auth.json");
 const uploadsDir = path.join(dataDir, "uploads");
-const maxAudioBytes = 25 * 1024 * 1024;
+const maxAudioBytes = MAX_AUDIO_BYTES;
+const maxBackupBytes = 100 * 1024 * 1024;
+const maxRoomVersions = 100;
+function sendAudio(req, res, data, mimeType) {
+  const range = audioRange(req.headers.range, data.length);
+  const headers = { "Content-Type": mimeType || "audio/mpeg", "Cache-Control": "no-store", "Accept-Ranges": "bytes" };
+  if (range === false) {
+    res.writeHead(416, { ...headers, "Content-Range": `bytes */${data.length}`, "Content-Length": 0 });
+    res.end();
+    return;
+  }
+  if (range) {
+    res.writeHead(206, { ...headers, "Content-Range": `bytes ${range.start}-${range.end}/${data.length}`, "Content-Length": range.end - range.start + 1 });
+    res.end(data.subarray(range.start, range.end + 1));
+    return;
+  }
+  res.writeHead(200, { ...headers, "Content-Length": data.length });
+  res.end(data);
+}
+const renderLocalMusicAsync = createMusicWorkerRunner({
+  createWorker: (input) => new Worker(new URL("./lib/local-music-worker.mjs", import.meta.url), { workerData: input }),
+});
 const sessionMaxAgeSeconds = 60 * 60 * 24 * 14;
 const compositionPitches = [
   "C3", "C#3", "D3", "D#3", "E3", "F3", "F#3", "G3", "G#3", "A3", "A#3", "B3",
@@ -116,36 +152,11 @@ const defaultRoom = {
   updatedAt: new Date().toISOString(),
 };
 
-async function readStore() {
-  try {
-    const file = await readFile(storePath, "utf8");
-    return JSON.parse(file);
-  } catch {
-    const initialStore = { rooms: { demo: defaultRoom } };
-    await writeStore(initialStore);
-    return initialStore;
-  }
-}
-
-async function writeStore(store) {
-  await mkdir(dataDir, { recursive: true });
-  await writeFile(storePath, JSON.stringify(store, null, 2));
-}
-
-async function readAuthStore() {
-  try {
-    return JSON.parse(await readFile(authStorePath, "utf8"));
-  } catch {
-    const initialStore = { users: [], sessions: {} };
-    await writeAuthStore(initialStore);
-    return initialStore;
-  }
-}
-
-async function writeAuthStore(store) {
-  await mkdir(dataDir, { recursive: true });
-  await writeFile(authStorePath, JSON.stringify(store, null, 2));
-}
+const isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+const roomStore = createJsonStore(storePath, () => ({ rooms: { demo: defaultRoom } }), (value) => isRecord(value) && isRecord(value.rooms));
+const authStore = createJsonStore(authStorePath, () => ({ users: [], sessions: {} }), (value) => isRecord(value) && Array.isArray(value.users) && isRecord(value.sessions));
+const readStore = () => roomStore.read();
+const readAuthStore = () => authStore.read();
 
 function normalizeEmail(value) {
   return String(value ?? "").trim().toLowerCase().slice(0, 180);
@@ -175,6 +186,7 @@ async function getSessionUser(req) {
 }
 
 function canAccessRoom(room, user) {
+  if (room.deletedAt) return false;
   if (room.id === "demo" || !room.ownerId) return true;
   if (!user) return false;
   return room.ownerId === user.id || (room.members ?? []).some((member) => member.userId === user.id);
@@ -194,14 +206,20 @@ function canEditRoom(room, user) {
   return Boolean(user && (room.members ?? []).some((member) => member.userId === user.id && member.role === "editor"));
 }
 
+function assertRoomEditor(room, user) {
+  if (!canAccessRoom(room, user) || !canEditRoom(room, user)) {
+    throw Object.assign(new Error("Editing access is no longer available. Your audio was not saved."), { statusCode: 403 });
+  }
+}
+
 async function createSession(res, userId) {
   const token = randomBytes(32).toString("hex");
-  const store = await readAuthStore();
-  store.sessions[token] = {
-    userId,
-    expiresAt: new Date(Date.now() + sessionMaxAgeSeconds * 1000).toISOString(),
-  };
-  await writeAuthStore(store);
+  await authStore.update((store) => {
+    store.sessions[token] = {
+      userId,
+      expiresAt: new Date(Date.now() + sessionMaxAgeSeconds * 1000).toISOString(),
+    };
+  });
   res.setHeader(
     "Set-Cookie",
     `collabmuse_session=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${sessionMaxAgeSeconds}`,
@@ -211,19 +229,24 @@ async function createSession(res, userId) {
 async function clearSession(req, res) {
   const token = parseCookies(req).collabmuse_session;
   if (token) {
-    const store = await readAuthStore();
-    delete store.sessions[token];
-    await writeAuthStore(store);
+    await authStore.update((store) => { delete store.sessions[token]; });
   }
   res.setHeader("Set-Cookie", "collabmuse_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0");
 }
 
-async function ensureRoom(roomId, roomPatch = {}) {
-  const store = await readStore();
-  const existing = store.rooms[roomId];
-  const hasPatch = Object.keys(roomPatch).length > 0;
+async function ensureRoom(roomId, roomPatch = {}, allowCreate = false) {
+  if (typeof roomPatch !== "function" && Object.keys(roomPatch).length === 0) {
+    const store = await readStore();
+    if (store.rooms[roomId]) return store.rooms[roomId];
+    if (!allowCreate) throw Object.assign(new Error("Room not found"), { statusCode: 404 });
+  }
 
-  if (existing && !hasPatch) return existing;
+  return roomStore.update(async (store) => {
+  const existing = store.rooms[roomId];
+  if (existing && allowCreate) throw Object.assign(new Error("Room already exists"), { statusCode: 409 });
+  if (!existing && !allowCreate) throw Object.assign(new Error("Room not found"), { statusCode: 404 });
+  if (existing && typeof roomPatch !== "function" && Object.keys(roomPatch).length === 0) return existing;
+  roomPatch = typeof roomPatch === "function" ? await roomPatch(existing) : roomPatch;
 
   const now = new Date().toISOString();
 
@@ -252,15 +275,17 @@ async function ensureRoom(roomId, roomPatch = {}) {
     : {
         id: roomId,
         title: roomPatch.title ?? `${roomId} room`,
-        uploadedFileName: roomPatch.uploadedFileName ?? "always-reference.wav",
+        ownerId: roomPatch.ownerId ?? null,
+        ownerName: roomPatch.ownerName ?? "Guest creator",
+        uploadedFileName: roomPatch.uploadedFileName ?? "",
         waveformPeaks: roomPatch.waveformPeaks ?? null,
         audioAvailable: roomPatch.audioAvailable ?? false,
         audioStorageName: roomPatch.audioStorageName ?? null,
         audioMimeType: roomPatch.audioMimeType ?? null,
         events: roomPatch.events ?? [],
         notes: roomPatch.notes ?? [],
-        timelineRegions: roomPatch.timelineRegions ?? initialTimelineRegions,
-        tracks: roomPatch.tracks ?? initialTracks,
+        timelineRegions: roomPatch.timelineRegions ?? [],
+        tracks: roomPatch.tracks ?? initialTracks.map((track) => ({ ...track, clips: 0 })),
         composition: roomPatch.composition ?? null,
         audioClips: roomPatch.audioClips ?? [],
         versions: roomPatch.versions ?? [],
@@ -272,36 +297,47 @@ async function ensureRoom(roomId, roomPatch = {}) {
         updatedAt: now,
       };
 
-  await writeStore(store);
   return store.rooms[roomId];
+  });
+}
+
+function eventsWithEvent(events, event) {
+  if (!event || events.some((item) => item.id === event.id)) return events;
+  return [event, ...events].slice(0, 30);
 }
 
 async function appendEvent(roomId, event) {
-  const room = await ensureRoom(roomId);
-  const exists = room.events.some((item) => item.id === event.id);
-  const events = exists ? room.events : [event, ...room.events].slice(0, 30);
-  return ensureRoom(roomId, { events });
+  return ensureRoom(roomId, (room) => ({ events: eventsWithEvent(room?.events ?? [], event) }));
 }
 
-async function appendNote(roomId, note) {
-  const room = await ensureRoom(roomId);
-  const exists = room.notes.some((item) => item.id === note.id);
-  const notes = exists ? room.notes : [note, ...room.notes].slice(0, 30);
-  return ensureRoom(roomId, { notes });
-}
-
-async function updateNotes(roomId, notes) {
-  return ensureRoom(roomId, { notes: notes.slice(0, 30) });
-}
-
-async function updateUpload(roomId, fileName, waveformPeaks = null, audioAvailable) {
-  const patch = { uploadedFileName: fileName, waveformPeaks };
-  if (typeof audioAvailable === "boolean") patch.audioAvailable = audioAvailable;
-  return ensureRoom(roomId, patch);
+async function appendNote(roomId, note, event) {
+  if (!note || typeof note.id !== "string" || !note.id.trim() || note.id.length > 160 ||
+      typeof note.author !== "string" || !note.author.trim() || note.author.length > 60 ||
+      typeof note.message !== "string" || !note.message.trim() || note.message.length > 1000 ||
+      typeof note.time !== "string" || !note.time.trim() || note.time.length > 80) {
+    throw Object.assign(new Error("Note must include a valid id, author, message and time."), { statusCode: 400 });
+  }
+  return ensureRoom(roomId, (room) => {
+    const notes = room?.notes ?? [];
+    return { notes: notes.some((item) => item.id === note.id) ? notes : [note, ...notes], events: eventsWithEvent(room.events ?? [], event) };
+  });
 }
 
 async function updateTimelineRegions(roomId, timelineRegions) {
   return ensureRoom(roomId, { timelineRegions });
+}
+
+function assertArrangementEpoch(room, epoch) {
+  if ((epoch ?? 0) !== (room.arrangementEpoch ?? 0)) {
+    throw Object.assign(new Error("The room was restored while you were editing. Reload the saved room before editing again."), { statusCode: 409 });
+  }
+}
+
+function assertKnownRegionClips(current, regions) {
+  const clipIds = new Set((current.audioClips ?? []).map((clip) => clip.id));
+  if (regions.some((region) => region.clipId && !clipIds.has(region.clipId) && !(current.timelineRegions ?? []).some((saved) => saved.id === region.id && saved.clipId === region.clipId))) {
+    throw Object.assign(new Error("An audio clip was removed. Reload the room before editing it."), { statusCode: 409 });
+  }
 }
 
 async function updateTracks(roomId, tracks) {
@@ -310,10 +346,6 @@ async function updateTracks(roomId, tracks) {
 
 async function updateComposition(roomId, composition) {
   return ensureRoom(roomId, { composition });
-}
-
-async function updateAudioClips(roomId, audioClips) {
-  return ensureRoom(roomId, { audioClips });
 }
 
 function stringSeed(value) {
@@ -368,6 +400,7 @@ async function generateAiComposition(input) {
 
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
+    signal: AbortSignal.timeout(90000),
     headers: {
       Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
       "Content-Type": "application/json",
@@ -415,8 +448,11 @@ async function generateAiComposition(input) {
     }),
   });
 
-  if (!response.ok) throw new Error(`OpenAI request failed with status ${response.status}`);
-  const responseData = await response.json();
+  if (!response.ok) {
+    discardMusicErrorResponse(response);
+    throw new Error(`OpenAI request failed with status ${response.status}`);
+  }
+  const responseData = await readBoundedJson(response, 256 * 1024);
   const outputText = extractResponseText(responseData);
   if (!outputText) throw new Error("OpenAI response did not contain composition data");
   const composition = JSON.parse(outputText);
@@ -427,41 +463,9 @@ async function generateAiComposition(input) {
   };
 }
 
-async function readBody(req) {
-  return new Promise((resolve, reject) => {
-    let body = "";
-    req.on("data", (chunk) => {
-      body += chunk;
-    });
-    req.on("end", () => {
-      try {
-        resolve(body ? JSON.parse(body) : {});
-      } catch (error) {
-        reject(error);
-      }
-    });
-    req.on("error", reject);
-  });
-}
+const readBody = readJsonRequest;
 
-async function readBinaryBody(req, byteLimit = maxAudioBytes) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    let totalBytes = 0;
-
-    req.on("data", (chunk) => {
-      totalBytes += chunk.length;
-      if (totalBytes > byteLimit) {
-        reject(new Error("Audio file is too large"));
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on("end", () => resolve(Buffer.concat(chunks)));
-    req.on("error", reject);
-  });
-}
+const readBinaryBody = (req, byteLimit = maxAudioBytes) => readBinaryRequest(req, byteLimit);
 
 function safePathSegment(value, fallback) {
   const normalized = String(value ?? "")
@@ -470,6 +474,14 @@ function safePathSegment(value, fallback) {
     .replace(/^-+|-+$/g, "")
     .slice(0, 120);
   return normalized || fallback;
+}
+
+function isValidRoomId(value) {
+  return typeof value === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,119}$/.test(value) && !Object.hasOwn(Object.prototype, value);
+}
+
+function isSafeAudioName(name) {
+  return typeof name === "string" && name.length > 0 && name !== "." && name !== ".." && path.basename(name) === name && !name.includes("\\");
 }
 
 function sendJson(res, status, payload) {
@@ -500,6 +512,28 @@ function publicVersions(versions = []) {
   }));
 }
 
+function publicRoom(room) {
+  const { invites, revokedInvites, audioStorageName, audioMimeType, ...visible } = room;
+  return { ...visible, audioClips: publicAudioClips(room.audioClips), versions: publicVersions(room.versions) };
+}
+
+function versionSnapshot(room) {
+  return {
+    tracks: room.tracks ?? initialTracks,
+    timelineRegions: room.timelineRegions ?? initialTimelineRegions,
+    composition: room.composition ?? null,
+    audioClips: room.audioClips ?? [],
+    uploadedFileName: room.uploadedFileName ?? "",
+    audioAvailable: room.audioAvailable ?? false,
+    referenceMuted: Boolean(room.referenceMuted),
+    audioStorageName: room.audioStorageName ?? null,
+    audioMimeType: room.audioMimeType ?? null,
+    waveformPeaks: room.waveformPeaks ?? null,
+    bpm: room.bpm ?? 96,
+    timeSignature: room.timeSignature ?? "4/4",
+  };
+}
+
 async function handleApi(req, res, pathname) {
   if (pathname === "/api/auth/me" && req.method === "GET") {
     const user = await getSessionUser(req);
@@ -516,11 +550,6 @@ async function handleApi(req, res, pathname) {
       sendJson(res, 400, { error: "Use a name, valid email, and password of at least 8 characters" });
       return true;
     }
-    const store = await readAuthStore();
-    if (store.users.some((user) => user.email === email)) {
-      sendJson(res, 409, { error: "An account already exists for this email" });
-      return true;
-    }
     const salt = randomBytes(16).toString("hex");
     const user = {
       id: `user-${randomBytes(8).toString("hex")}`,
@@ -530,8 +559,15 @@ async function handleApi(req, res, pathname) {
       passwordHash: scryptSync(password, salt, 64).toString("hex"),
       createdAt: new Date().toISOString(),
     };
-    store.users.push(user);
-    await writeAuthStore(store);
+    const created = await authStore.update((store) => {
+      if (store.users.some((existing) => existing.email === email)) return false;
+      store.users.push(user);
+      return true;
+    });
+    if (!created) {
+      sendJson(res, 409, { error: "An account already exists for this email" });
+      return true;
+    }
     await createSession(res, user.id);
     sendJson(res, 201, { user: publicUser(user) });
     return true;
@@ -559,13 +595,128 @@ async function handleApi(req, res, pathname) {
     return true;
   }
 
+  if (pathname === "/api/rooms/import" && req.method === "POST") {
+    const user = await getSessionUser(req);
+    if (!user) {
+      sendJson(res, 401, { error: "Log in to import a project into your account." });
+      return true;
+    }
+    if (Number(req.headers["content-length"] ?? 0) > maxBackupBytes) {
+      sendJson(res, 413, { error: "Backup exceeds the 100 MB import limit." });
+      return true;
+    }
+    let archive;
+    let manifest;
+    try {
+      const bytes = await readBinaryBody(req, maxBackupBytes);
+      const names = new Set();
+      let total = 0;
+      archive = unzipSync(bytes, { filter: (entry) => {
+        const isAudio = entry.name.startsWith("audio/") && entry.name.length > 6;
+        const name = isAudio ? entry.name.slice(6) : "";
+        if (names.has(entry.name) || names.size >= 3000 || entry.compression !== 0 || entry.originalSize !== entry.size ||
+            (!isAudio && entry.name !== "project.json") || (isAudio && (!/^[a-zA-Z0-9._-]{1,255}$/.test(name) || name === "." || name === ".."))) {
+          throw new Error("Invalid backup entry");
+        }
+        names.add(entry.name);
+        total += entry.originalSize;
+        if (total > maxBackupBytes || (entry.name === "project.json" && entry.originalSize > 5 * 1024 * 1024)) throw new Error("Backup is too large");
+        return true;
+      } });
+      if (!archive["project.json"]) throw new Error("Missing project metadata");
+      manifest = JSON.parse(strFromU8(archive["project.json"]));
+      if (manifest?.format !== "collabmuse-project" || ![1, 2].includes(manifest.formatVersion) || !manifest.project) throw new Error("Unsupported backup format");
+      const audioNames = Object.keys(archive).filter((name) => name.startsWith("audio/")).map((name) => name.slice(6));
+      if (manifest.formatVersion === 2) {
+        if (!manifest.checksums || typeof manifest.checksums !== "object" || Object.keys(manifest.checksums).length !== audioNames.length) throw new Error("Audio checksum list is incomplete");
+        for (const name of audioNames) {
+          if (createHash("sha256").update(archive[`audio/${name}`]).digest("hex") !== manifest.checksums[name]) throw new Error("Audio checksum mismatch");
+        }
+      }
+      const project = manifest.project;
+      const validArray = (items, limit) => Array.isArray(items) && items.length <= limit && items.every((item) => item && typeof item === "object" && !Array.isArray(item));
+      const validateSnapshot = (snapshot) => {
+        if (!snapshot || typeof snapshot !== "object" || !validArray(snapshot.tracks, 12) || !validArray(snapshot.timelineRegions, 5000) || !validArray(snapshot.audioClips, 3000)) throw new Error("Invalid project data");
+        if (snapshot.tracks.some((track) => typeof track.id !== "string" || typeof track.name !== "string") || snapshot.timelineRegions.some((region) => typeof region.id !== "string" || !Number.isFinite(region.left) || !Number.isFinite(region.width))) throw new Error("Invalid timeline data");
+        if (snapshot.audioClips.some((clip) => typeof clip.id !== "string" || typeof clip.name !== "string" || !Number.isFinite(clip.duration) || clip.duration <= 0)) throw new Error("Invalid audio metadata");
+        const clipIds = new Set(snapshot.audioClips.map((clip) => clip.id));
+        if (clipIds.size !== snapshot.audioClips.length || new Set(snapshot.timelineRegions.map((region) => region.id)).size !== snapshot.timelineRegions.length || new Set(snapshot.tracks.map((track) => track.id)).size !== snapshot.tracks.length) throw new Error("Duplicate project item identifiers");
+        if (snapshot.timelineRegions.some((region) => region.clipId != null && (typeof region.clipId !== "string" || !clipIds.has(region.clipId)))) throw new Error("Timeline references a missing audio clip");
+        const references = snapshot.audioClips.map((clip) => clip.storageName);
+        if (snapshot.audioStorageName) references.push(snapshot.audioStorageName);
+        if (snapshot.audioAvailable && !snapshot.audioStorageName) throw new Error("Missing reference audio");
+        if (references.some((name) => typeof name !== "string" || !audioNames.includes(name))) throw new Error("Missing audio file");
+      };
+      validateSnapshot(project);
+      if (!validArray(project.versions ?? [], maxRoomVersions) || !validArray(project.notes ?? [], 5000) || !validArray(project.events ?? [], 5000)) throw new Error("Invalid project data");
+      if ((project.notes ?? []).some((note) => typeof note.id !== "string" || typeof note.author !== "string" || typeof note.message !== "string" || typeof note.time !== "string")) throw new Error("Invalid note data");
+      for (const version of project.versions ?? []) {
+        if (typeof version.id !== "string" || typeof version.name !== "string") throw new Error("Invalid version metadata");
+        validateSnapshot(version.snapshot);
+      }
+    } catch (error) {
+      sendJson(res, error.statusCode ?? 400, { error: `Invalid or unsupported backup: ${error instanceof Error ? error.message : "unknown error"}` });
+      return true;
+    }
+    const roomId = `import-${Date.now().toString(36)}-${randomBytes(6).toString("hex")}`;
+    const directory = path.join(uploadsDir, roomId);
+    await mkdir(uploadsDir, { recursive: true });
+    await mkdir(directory);
+    let commitStarted = false;
+    try {
+      for (const [name, data] of Object.entries(archive)) {
+        if (name.startsWith("audio/")) await writeFile(path.join(directory, name.slice(6)), data, { flag: "wx" });
+      }
+      const project = manifest.project;
+      commitStarted = true;
+      const room = await ensureRoom(roomId, {
+        title: `${String(project.title ?? "Imported room").slice(0, 48)} (imported)`,
+        ownerId: user?.id ?? null, ownerName: user?.name ?? "Guest creator",
+        uploadedFileName: project.uploadedFileName, waveformPeaks: project.waveformPeaks,
+        audioAvailable: project.audioAvailable, audioStorageName: project.audioStorageName, audioMimeType: project.audioMimeType,
+        referenceMuted: Boolean(project.referenceMuted),
+        events: project.events, notes: project.notes, timelineRegions: project.timelineRegions, tracks: project.tracks,
+        composition: project.composition, audioClips: project.audioClips, versions: project.versions,
+        bpm: project.bpm, timeSignature: project.timeSignature, members: [], invites: [],
+      }, true);
+      sendJson(res, 201, { room: publicRoom(room), ...(manifest.formatVersion === 1 ? { warning: "This older backup has no audio checksums. Verify the imported audio before relying on it." } : {}) });
+    } catch (error) {
+      if (!commitStarted) await rm(directory, { recursive: true, force: true });
+      throw error;
+    }
+    return true;
+  }
+
+  if (pathname === "/api/rooms/trash" && req.method === "GET") {
+    const store = await readStore();
+    const user = await getSessionUser(req);
+    const rooms = Object.values(store.rooms)
+      .filter((room) => room.deletedAt && isRoomOwner(room, user))
+      .map(publicRoom);
+    sendJson(res, 200, { rooms });
+    return true;
+  }
+
+  const restoreRoomMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/restore$/);
+  if (restoreRoomMatch && req.method === "POST") {
+    const roomId = decodeURIComponent(restoreRoomMatch[1]);
+    const user = await getSessionUser(req);
+    const restored = await ensureRoom(roomId, (room) => {
+      if (!room.deletedAt) throw Object.assign(new Error("Room is not in recently deleted"), { statusCode: 404 });
+      if (!isRoomOwner(room, user)) throw Object.assign(new Error("Only the room owner can restore this room"), { statusCode: 403 });
+      return { deletedAt: null };
+    });
+    sendJson(res, 200, { room: publicRoom(restored) });
+    return true;
+  }
+
   if (pathname === "/api/rooms" && req.method === "GET") {
     const store = await readStore();
     const user = await getSessionUser(req);
     sendJson(res, 200, {
       rooms: Object.values(store.rooms)
         .filter((room) => canAccessRoom(room, user))
-        .map((room) => ({ ...room, currentRole: roomAccessRole(room, user) })),
+        .map((room) => ({ ...publicRoom(room), currentRole: roomAccessRole(room, user) })),
     });
     return true;
   }
@@ -574,8 +725,24 @@ async function handleApi(req, res, pathname) {
     const body = await readBody(req);
     const roomId = body.id ?? "demo";
     const user = await getSessionUser(req);
+    if (!user) {
+      sendJson(res, 401, { error: "Log in to create or duplicate a private room." });
+      return true;
+    }
+    if (!isValidRoomId(roomId)) {
+      sendJson(res, 400, { error: "Invalid room identifier." });
+      return true;
+    }
+    if (Object.keys(body).some((key) => !["id", "title", "sourceRoomId"].includes(key))) {
+      sendJson(res, 400, { error: "Room data must be added through upload, invitation, or import." });
+      return true;
+    }
     if (body.sourceRoomId) {
-      const sourceRoomId = safePathSegment(body.sourceRoomId, "demo");
+      if (!isValidRoomId(body.sourceRoomId)) {
+        sendJson(res, 400, { error: "Invalid source room identifier." });
+        return true;
+      }
+      const sourceRoomId = body.sourceRoomId;
       const store = await readStore();
       const sourceRoom = store.rooms[sourceRoomId];
       if (!sourceRoom) {
@@ -586,12 +753,46 @@ async function handleApi(req, res, pathname) {
         sendJson(res, user ? 403 : 401, { error: "You cannot duplicate this room" });
         return true;
       }
-      const room = await ensureRoom(roomId, {
+      const sourceDirectory = path.join(uploadsDir, sourceRoomId);
+      const targetDirectory = path.join(uploadsDir, safePathSegment(roomId, "room"));
+      const references = new Set();
+      for (const snapshot of [sourceRoom, ...(sourceRoom.versions ?? []).map((version) => version.snapshot)]) {
+        if (snapshot?.audioAvailable) {
+          if (!snapshot.audioStorageName) throw Object.assign(new Error("Source reference audio is missing; room was not duplicated."), { statusCode: 409 });
+          references.add(snapshot.audioStorageName);
+        }
+        for (const clip of snapshot?.audioClips ?? []) {
+          if (!clip.storageName) throw Object.assign(new Error("Source clip audio is missing; room was not duplicated."), { statusCode: 409 });
+          references.add(clip.storageName);
+        }
+      }
+      const sourceEntries = await readdir(sourceDirectory).catch((error) => {
+        if (error.code === "ENOENT") return [];
+        throw error;
+      });
+      if ([...references].some((name) => typeof name !== "string" || path.basename(name) !== name || !sourceEntries.includes(name))) {
+        throw Object.assign(new Error("Source audio file is missing; room was not duplicated."), { statusCode: 409 });
+      }
+      await mkdir(uploadsDir, { recursive: true });
+      try { await mkdir(targetDirectory); }
+      catch (error) {
+        if (error.code === "EEXIST") throw Object.assign(new Error("Room storage already exists."), { statusCode: 409 });
+        throw error;
+      }
+      let room;
+      let commitStarted = false;
+      try {
+        for (const name of references) await cp(path.join(sourceDirectory, name), path.join(targetDirectory, name), { errorOnExist: true, force: false });
+        commitStarted = true;
+        room = await ensureRoom(roomId, {
         ...sourceRoom,
         id: roomId,
         title: body.title ?? `${sourceRoom.title} copy`,
         ownerId: user?.id ?? null,
         ownerName: user?.name ?? "Guest creator",
+        members: [],
+        invites: [],
+        revokedInvites: {},
         createdAt: undefined,
         updatedAt: undefined,
         events: [{
@@ -601,21 +802,20 @@ async function handleApi(req, res, pathname) {
           detail: `Created from ${sourceRoom.title}`,
           time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         }, ...(sourceRoom.events ?? [])].slice(0, 40),
-      });
-      const sourceDirectory = path.join(uploadsDir, sourceRoomId);
-      const targetDirectory = path.join(uploadsDir, safePathSegment(roomId, "room"));
-      await cp(sourceDirectory, targetDirectory, { recursive: true, force: true }).catch((error) => {
-        if (error?.code !== "ENOENT") throw error;
-      });
-      sendJson(res, 201, { room });
+        }, true);
+      } catch (error) {
+        if (!commitStarted) await rm(targetDirectory, { recursive: true, force: true });
+        throw error;
+      }
+      sendJson(res, 201, { room: publicRoom(room) });
       return true;
     }
     const room = await ensureRoom(roomId, {
-      ...body,
-      ownerId: user?.id ?? body.ownerId ?? null,
-      ownerName: user?.name ?? body.ownerName ?? "Guest creator",
-    });
-    sendJson(res, 200, { room });
+      title: body.title,
+      ownerId: user.id,
+      ownerName: user.name,
+    }, true);
+    sendJson(res, 200, { room: publicRoom(room) });
     return true;
   }
 
@@ -631,20 +831,19 @@ async function handleApi(req, res, pathname) {
       return true;
     }
     const roomId = decodeURIComponent(joinMatch[1]);
-    const room = await ensureRoom(roomId);
     const body = await readBody(req);
-    const invite = (room.invites ?? []).find((item) => item.token === body.token && Date.parse(item.expiresAt) > Date.now());
-    if (!invite) {
-      sendJson(res, 403, { error: "This invitation is invalid or expired" });
-      return true;
-    }
-    const existingMember = (room.members ?? []).find((item) => item.userId === user.id);
-    const invitedRole = invite.role === "viewer" ? "viewer" : "editor";
-    const role = existingMember?.role === "editor" ? "editor" : invitedRole;
-    const member = { userId: user.id, name: user.name, email: user.email, role, joinedAt: existingMember?.joinedAt ?? new Date().toISOString() };
-    const members = [...(room.members ?? []).filter((item) => item.userId !== user.id), member];
-    const joinedRoom = await ensureRoom(roomId, { members });
-    sendJson(res, 200, { room: joinedRoom, member });
+    let member;
+    const joinedRoom = await ensureRoom(roomId, (room) => {
+      if (room.deletedAt) throw Object.assign(new Error("Room not found"), { statusCode: 404 });
+      const invite = (room.invites ?? []).find((item) => item.token === body.token && Date.parse(item.expiresAt) > Date.now());
+      if (!invite || (room.revokedInvites?.[user.id] ?? []).includes(body.token)) throw Object.assign(new Error("This invitation is invalid or expired"), { statusCode: 403 });
+      const existingMember = (room.members ?? []).find((item) => item.userId === user.id);
+      const invitedRole = invite.role === "viewer" ? "viewer" : "editor";
+      const role = existingMember?.role ?? invitedRole;
+      member = { userId: user.id, name: user.name, email: user.email, role, joinedAt: existingMember?.joinedAt ?? new Date().toISOString() };
+      return { members: [...(room.members ?? []).filter((item) => item.userId !== user.id), member] };
+    });
+    sendJson(res, 200, { room: publicRoom(joinedRoom), member });
     return true;
   }
 
@@ -652,6 +851,7 @@ async function handleApi(req, res, pathname) {
     const user = await getSessionUser(req);
     const roomId = decodeURIComponent(inviteMatch[1]);
     const room = await ensureRoom(roomId);
+    if (room.deletedAt) { sendJson(res, 404, { error: "Room not found" }); return true; }
     if (!isRoomOwner(room, user)) {
       sendJson(res, 403, { error: "Only the room owner can invite collaborators" });
       return true;
@@ -664,7 +864,7 @@ async function handleApi(req, res, pathname) {
       createdAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
     };
-    await ensureRoom(roomId, { invites: [invite, ...(room.invites ?? [])].slice(0, 10) });
+    await ensureRoom(roomId, (current) => ({ invites: [invite, ...(current.invites ?? [])].slice(0, 10) }));
     sendJson(res, 201, { token: invite.token, expiresAt: invite.expiresAt, role: invite.role });
     return true;
   }
@@ -688,27 +888,50 @@ async function handleApi(req, res, pathname) {
     const roomId = decodeURIComponent(memberMatch[1]);
     const memberId = decodeURIComponent(memberMatch[2]);
     const room = await ensureRoom(roomId);
+    if (room.deletedAt) { sendJson(res, 404, { error: "Room not found" }); return true; }
     const user = await getSessionUser(req);
     if (!isRoomOwner(room, user)) {
       sendJson(res, 403, { error: "Only the room owner can manage members" });
       return true;
     }
-    let members = room.members ?? [];
+    let role;
     if (req.method === "PATCH") {
       const body = await readBody(req);
-      const role = body.role === "viewer" ? "viewer" : "editor";
-      members = members.map((member) => member.userId === memberId ? { ...member, role } : member);
-    } else {
-      members = members.filter((member) => member.userId !== memberId);
+      role = body.role === "viewer" ? "viewer" : "editor";
     }
-    await ensureRoom(roomId, { members });
-    sendJson(res, 200, { members });
+    const updatedRoom = await ensureRoom(roomId, (current) => {
+      const members = req.method === "PATCH"
+        ? (current.members ?? []).map((member) => member.userId === memberId ? { ...member, role } : member)
+        : (current.members ?? []).filter((member) => member.userId !== memberId);
+      if (req.method !== "DELETE") return { members };
+      const previous = current.revokedInvites?.[memberId] ?? [];
+      const tokens = (current.invites ?? []).map((invite) => invite.token);
+      return { members, revokedInvites: { ...current.revokedInvites, [memberId]: [...new Set([...previous, ...tokens])] } };
+    });
+    const sockets = await io.in(roomId).fetchSockets();
+    for (const connected of sockets) {
+      const socketUser = await getSessionUser(connected.request);
+      if (socketUser?.id !== memberId) continue;
+      if (req.method === "DELETE") {
+        connected.emit("room:access-denied", { roomId });
+        connected.leave(roomId);
+        connected.data.roomId = null;
+      } else {
+        connected.emit("room:access-changed", { roomId, role });
+      }
+    }
+    if (req.method === "DELETE") await broadcastPresence(roomId);
+    sendJson(res, 200, { members: updatedRoom.members });
     return true;
   }
 
   const protectedRoomMatch = pathname.match(/^\/api\/rooms\/([^/]+)/);
   if (protectedRoomMatch) {
     const room = await ensureRoom(decodeURIComponent(protectedRoomMatch[1]));
+    if (room.deletedAt) {
+      sendJson(res, 404, { error: "Room not found" });
+      return true;
+    }
     const user = await getSessionUser(req);
     if (!canAccessRoom(room, user)) {
       sendJson(res, user ? 403 : 401, { error: user ? "You are not a member of this room" : "Log in to access this room" });
@@ -718,6 +941,112 @@ async function handleApi(req, res, pathname) {
       sendJson(res, 403, { error: "Viewer access is read-only" });
       return true;
     }
+  }
+
+  const backupMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/backup$/);
+  if (backupMatch && req.method === "GET") {
+    const roomId = decodeURIComponent(backupMatch[1]);
+    const room = await ensureRoom(roomId);
+    const user = await getSessionUser(req);
+    if (!isRoomOwner(room, user)) {
+      sendJson(res, 403, { error: "Only the room owner can download a project backup" });
+      return true;
+    }
+    const directory = path.join(uploadsDir, safePathSegment(roomId, "room"));
+    let entries = [];
+    try {
+      entries = (await readdir(directory, { withFileTypes: true })).filter((entry) => entry.isFile()).map((entry) => entry.name);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    const referenced = new Set();
+    let missingReference = false;
+    const collect = (snapshot) => {
+      if (snapshot?.audioAvailable) {
+        if (typeof snapshot.audioStorageName === "string" && snapshot.audioStorageName) referenced.add(snapshot.audioStorageName);
+        else missingReference = true;
+      }
+      for (const clip of snapshot?.audioClips ?? []) {
+        if (typeof clip.storageName === "string" && clip.storageName) referenced.add(clip.storageName);
+        else missingReference = true;
+      }
+    };
+    collect(room);
+    for (const version of room.versions ?? []) collect(version.snapshot);
+    if (missingReference || [...referenced].some((name) => path.basename(name) !== name || !entries.includes(name))) {
+      sendJson(res, 409, { error: "A referenced audio file is missing. Backup was not created." });
+      return true;
+    }
+    const backupEntries = [...referenced];
+    if (backupEntries.length >= 3000) {
+      sendJson(res, 413, { error: "Project has too many audio files for backup import." });
+      return true;
+    }
+    let audioSize = 0;
+    const checksums = {};
+    const audioSizes = {};
+    for (const name of backupEntries) {
+      audioSizes[name] = (await stat(path.join(directory, name))).size;
+      audioSize += audioSizes[name];
+      if (audioSize > maxBackupBytes) {
+        sendJson(res, 413, { error: "Project audio exceeds the backup import limit; backup was not created." });
+        return true;
+      }
+      const hash = createHash("sha256");
+      for await (const chunk of createReadStream(path.join(directory, name))) hash.update(chunk);
+      checksums[name] = hash.digest("hex");
+    }
+    const { invites, revokedInvites, members, ownerId, ...project } = room;
+    const manifest = { format: "collabmuse-project", formatVersion: 2, exportedAt: new Date().toISOString(), checksums, project };
+    const manifestData = strToU8(JSON.stringify(manifest, null, 2));
+    const zipOverhead = 1024 + backupEntries.reduce((total, name) => total + 256 + 2 * Buffer.byteLength(name), 0);
+    if (manifestData.length > 5 * 1024 * 1024 || audioSize + manifestData.length + zipOverhead > maxBackupBytes) {
+      sendJson(res, 413, { error: "Project exceeds the backup import limit; backup was not created." });
+      return true;
+    }
+    res.writeHead(200, {
+      "Content-Type": "application/zip",
+      "Content-Disposition": `attachment; filename="${safePathSegment(roomId, "room")}-backup.zip"`,
+      "Cache-Control": "no-store",
+    });
+    const zip = new Zip((error, chunk) => {
+      if (error) res.destroy(error);
+      else res.write(chunk);
+    });
+    const manifestFile = new ZipPassThrough("project.json");
+    zip.add(manifestFile);
+    manifestFile.push(manifestData, true);
+    try {
+      for (const name of backupEntries) {
+        const file = new ZipPassThrough(`audio/${name}`);
+        const verifier = createBackupVerifier(checksums[name], audioSizes[name]);
+        zip.add(file);
+        for await (const chunk of createReadStream(path.join(directory, name))) {
+          if (res.destroyed) throw new Error("Backup download interrupted");
+          verifier.update(chunk);
+          file.push(chunk);
+          if (res.writableNeedDrain) {
+            await new Promise((resolve, reject) => {
+              const cleanup = () => { res.off("drain", drained); res.off("close", closed); res.off("error", failed); };
+              const drained = () => { cleanup(); resolve(); };
+              const closed = () => { cleanup(); reject(new Error("Backup download interrupted")); };
+              const failed = (error) => { cleanup(); reject(error); };
+              res.once("drain", drained);
+              res.once("close", closed);
+              res.once("error", failed);
+            });
+          }
+        }
+        verifier.verify();
+        file.push(new Uint8Array(), true);
+      }
+      zip.end();
+      res.end();
+    } catch (error) {
+      zip.terminate();
+      res.destroy(error);
+    }
+    return true;
   }
 
   const eventMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/events$/);
@@ -730,6 +1059,7 @@ async function handleApi(req, res, pathname) {
       uploadedFileName: room.uploadedFileName,
       waveformPeaks: room.waveformPeaks,
       audioAvailable: room.audioAvailable,
+      referenceMuted: Boolean(room.referenceMuted),
       timelineRegions: room.timelineRegions,
       tracks: room.tracks ?? initialTracks,
       composition: room.composition ?? null,
@@ -754,10 +1084,16 @@ async function handleApi(req, res, pathname) {
 
   if (clipsMatch && req.method === "POST") {
     const roomId = decodeURIComponent(clipsMatch[1]);
+    const initialRoom = await ensureRoom(roomId);
+    const uploadEpoch = getUploadEpoch(req.headers["x-arrangement-epoch"], initialRoom.arrangementEpoch ?? 0);
     const uploadUrl = new URL(req.url ?? pathname, `http://${req.headers.host ?? `localhost:${port}`}`);
     const requestedName = uploadUrl.searchParams.get("name") || "audio-clip";
     const trackId = safePathSegment(uploadUrl.searchParams.get("trackId"), "track");
-    const duration = Math.max(0, Number(uploadUrl.searchParams.get("duration")) || 0);
+    const duration = Number(uploadUrl.searchParams.get("duration"));
+    if (!Number.isFinite(duration) || duration <= 0) {
+      sendJson(res, 400, { error: "The audio duration could not be read. Choose a playable audio file and try again." });
+      return true;
+    }
     const bpm = Math.max(0, Number(req.headers["x-audio-bpm"]) || 0);
     const loudnessDb = Number(req.headers["x-audio-loudness"] ?? 0);
     const energy = ["low", "medium", "high"].includes(req.headers["x-audio-energy"]) ? req.headers["x-audio-energy"] : "medium";
@@ -779,7 +1115,6 @@ async function handleApi(req, res, pathname) {
     }
     await mkdir(roomDirectory, { recursive: true });
     await writeFile(path.join(roomDirectory, storageName), audioBuffer);
-    const room = await ensureRoom(roomId);
     const clip = {
       id: clipId,
       name: requestedName.slice(0, 180),
@@ -791,7 +1126,19 @@ async function handleApi(req, res, pathname) {
       analysis: { bpm, loudnessDb, energy, dynamics },
       waveformPeaks,
     };
-    await updateAudioClips(roomId, [...(room.audioClips ?? []), clip].slice(-24));
+    let updatedRoom;
+    try {
+      const user = await getSessionUser(req);
+      updatedRoom = await ensureRoom(roomId, (current) => {
+        assertRoomEditor(current, user);
+        assertArrangementEpoch(current, uploadEpoch);
+        return { audioClips: [...(current.audioClips ?? []), clip] };
+      });
+    } catch (error) {
+      await rm(path.join(roomDirectory, storageName), { force: true });
+      throw error;
+    }
+    io.to(roomId).emit("room:clips", { arrangementEpoch: updatedRoom.arrangementEpoch ?? 0, audioClips: publicAudioClips(updatedRoom.audioClips) });
     sendJson(res, 201, { clip: { ...clip, storageName: undefined, mimeType: undefined } });
     return true;
   }
@@ -801,46 +1148,62 @@ async function handleApi(req, res, pathname) {
     const clipId = decodeURIComponent(clipAudioMatch[2]);
     const room = await ensureRoom(roomId);
     const clip = (room.audioClips ?? []).find((item) => item.id === clipId);
-    if (!clip?.storageName) {
+    if (!isSafeAudioName(clip?.storageName)) {
       sendJson(res, 404, { error: "Audio clip not found" });
       return true;
     }
     const audioBuffer = await readFile(path.join(uploadsDir, safePathSegment(roomId, "room"), clip.storageName));
-    res.writeHead(200, {
-      "Content-Type": clip.mimeType || "audio/mpeg",
-      "Content-Length": audioBuffer.length,
-      "Cache-Control": "no-store",
-    });
-    res.end(audioBuffer);
+    sendAudio(req, res, audioBuffer, clip.mimeType);
     return true;
   }
 
   if (clipMatch && req.method === "DELETE") {
     const roomId = decodeURIComponent(clipMatch[1]);
     const clipId = decodeURIComponent(clipMatch[2]);
-    const room = await ensureRoom(roomId);
-    const clip = (room.audioClips ?? []).find((item) => item.id === clipId);
-    if (!clip) {
-      sendJson(res, 404, { error: "Audio clip not found" });
-      return true;
-    }
-    if (clip.storageName) {
-      await rm(path.join(uploadsDir, safePathSegment(roomId, "room"), clip.storageName), { force: true });
-    }
-    const nextClips = (room.audioClips ?? []).filter((item) => item.id !== clipId);
-    await updateAudioClips(roomId, nextClips);
-    sendJson(res, 200, {
-      deleted: true,
-      audioClips: publicAudioClips(nextClips),
+    const rawEpoch = req.headers["x-arrangement-epoch"];
+    const arrangementEpoch = rawEpoch === undefined ? 0 : Number(rawEpoch);
+    let event;
+    let clipTrackId;
+    let affectedNotePositions = [];
+    const updated = await ensureRoom(roomId, (current) => {
+      assertArrangementEpoch(current, arrangementEpoch);
+      const clip = (current.audioClips ?? []).find((item) => item.id === clipId);
+      if (!clip) throw Object.assign(new Error("Audio clip not found"), { statusCode: 404 });
+      clipTrackId = clip.trackId;
+      if ((current.versions?.length ?? 0) >= maxRoomVersions) throw Object.assign(new Error("Version limit reached. Cannot save a recovery version before deleting the clip."), { statusCode: 409 });
+      const removedRegions = (current.timelineRegions ?? []).filter((region) => region.clipId === clipId);
+      const backup = { id: `version-${Date.now()}-${randomBytes(6).toString("hex")}`, name: `Before deleting ${clip.name}`.slice(0, 80), createdAt: new Date().toISOString(), snapshot: versionSnapshot(current) };
+      event = { id: `event-${Date.now()}-${randomBytes(6).toString("hex")}`, kind: "upload", title: "Track clip removed", detail: `${clip.name} removed; a recovery version was saved.`, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) };
+      const notes = (current.notes ?? []).map((note) => {
+        const region = removedRegions.find((item) => item.id === note.regionId);
+        if (!region) return note;
+        const offset = Math.max(0, Math.min(1, note.regionOffset ?? 0.5));
+        const position = Math.max(0, Math.min(100, region.left + region.width * offset));
+        affectedNotePositions.push({ id: note.id, position });
+        return { ...note, position };
+      });
+      return {
+        versions: [backup, ...(current.versions ?? [])],
+        audioClips: (current.audioClips ?? []).filter((item) => item.id !== clipId),
+        timelineRegions: (current.timelineRegions ?? []).filter((region) => region.clipId !== clipId),
+        tracks: (current.tracks ?? []).map((track) => track.id === clip.trackId ? { ...track, clips: Math.max(0, (track.clips ?? 0) - 1) } : track),
+        notes,
+        events: [event, ...(current.events ?? [])].slice(0, 200),
+      };
     });
+    const state = { deleted: true, clipId, clipTrackId, arrangementEpoch: updated.arrangementEpoch ?? 0, audioClips: publicAudioClips(updated.audioClips), tracks: updated.tracks, timelineRegions: updated.timelineRegions, notes: updated.notes, versions: publicVersions(updated.versions), recoveryVersion: publicVersions(updated.versions)[0], affectedNotePositions, event };
+    io.to(roomId).emit("room:clip-deleted", state);
+    sendJson(res, 200, state);
     return true;
   }
   if (audioMatch && req.method === "POST") {
     const roomId = decodeURIComponent(audioMatch[1]);
+    const initialRoom = await ensureRoom(roomId);
+    const uploadEpoch = getUploadEpoch(req.headers["x-arrangement-epoch"], initialRoom.arrangementEpoch ?? 0);
     const uploadUrl = new URL(req.url ?? pathname, `http://${req.headers.host ?? `localhost:${port}`}`);
     const requestedName = uploadUrl.searchParams.get("name") ?? "uploaded-audio";
     const fileName = safePathSegment(requestedName, "uploaded-audio");
-    const storageName = `${Date.now()}-${fileName}`;
+    const storageName = `${Date.now()}-${randomBytes(6).toString("hex")}-${fileName}`;
     const roomDirectory = path.join(uploadsDir, safePathSegment(roomId, "room"));
     const audioBuffer = await readBinaryBody(req);
 
@@ -851,12 +1214,40 @@ async function handleApi(req, res, pathname) {
 
     await mkdir(roomDirectory, { recursive: true });
     await writeFile(path.join(roomDirectory, storageName), audioBuffer);
-    const room = await ensureRoom(roomId, {
-      uploadedFileName: requestedName.slice(0, 180),
-      audioAvailable: true,
-      audioStorageName: storageName,
-      audioMimeType: req.headers["content-type"] || "audio/mpeg",
-    });
+    let waveformPeaks = null;
+    try {
+      const parsed = JSON.parse(String(req.headers["x-waveform-peaks"] ?? "null"));
+      if (Array.isArray(parsed)) waveformPeaks = parsed.slice(0, 128).map((value) => Math.max(2, Math.min(100, Number(value) || 2)));
+    } catch {
+      waveformPeaks = null;
+    }
+    let room;
+    try {
+      const user = await getSessionUser(req);
+      room = await ensureRoom(roomId, (current) => {
+        assertRoomEditor(current, user);
+        assertArrangementEpoch(current, uploadEpoch);
+        let versions = current.versions ?? [];
+        if (current.audioAvailable && !current.audioStorageName) throw Object.assign(new Error("The previous reference audio is missing its file information. Download a backup before replacing it."), { statusCode: 409 });
+        if (current.audioAvailable && current.audioStorageName) {
+          if (versions.length >= maxRoomVersions) throw Object.assign(new Error("Version limit reached. Download a backup before replacing reference audio."), { statusCode: 409 });
+          const backup = { id: `version-${Date.now()}-${randomBytes(6).toString("hex")}`, name: "Before replacing reference audio", createdAt: new Date().toISOString(), snapshot: versionSnapshot(current) };
+          versions = [backup, ...versions];
+        }
+        return {
+          versions,
+          uploadedFileName: requestedName.slice(0, 180),
+          audioAvailable: true,
+          audioStorageName: storageName,
+          audioMimeType: req.headers["content-type"] || "audio/mpeg",
+          waveformPeaks,
+        };
+      });
+    } catch (error) {
+      await rm(path.join(roomDirectory, storageName), { force: true });
+      throw error;
+    }
+    io.to(roomId).emit("room:upload", { arrangementEpoch: room.arrangementEpoch ?? 0, fileName: room.uploadedFileName, waveformPeaks: room.waveformPeaks, audioAvailable: true, versions: publicVersions(room.versions) });
     sendJson(res, 201, {
       fileName: room.uploadedFileName,
       audioAvailable: true,
@@ -868,20 +1259,14 @@ async function handleApi(req, res, pathname) {
   if (audioMatch && req.method === "GET") {
     const roomId = decodeURIComponent(audioMatch[1]);
     const room = await ensureRoom(roomId);
-    if (!room.audioAvailable || !room.audioStorageName) {
+    if (!room.audioAvailable || !isSafeAudioName(room.audioStorageName)) {
       sendJson(res, 404, { error: "No uploaded audio for this room" });
       return true;
     }
 
     const roomDirectory = path.join(uploadsDir, safePathSegment(roomId, "room"));
     const audioBuffer = await readFile(path.join(roomDirectory, room.audioStorageName));
-    res.writeHead(200, {
-      "Content-Type": room.audioMimeType || "audio/mpeg",
-      "Content-Length": audioBuffer.length,
-      "Cache-Control": "no-store",
-      "Accept-Ranges": "none",
-    });
-    res.end(audioBuffer);
+    sendAudio(req, res, audioBuffer, room.audioMimeType);
     return true;
   }
 
@@ -912,35 +1297,29 @@ async function handleApi(req, res, pathname) {
       return true;
     }
 
-    const room = await appendNote(noteMatch[1], body.note);
-    if (body.event) await appendEvent(noteMatch[1], body.event);
-    sendJson(res, 200, { note: body.note, event: body.event, notes: room.notes });
+    const room = await appendNote(noteMatch[1], body.note, body.event);
+    const savedNote = room.notes.find((note) => note.id === body.note.id);
+    sendJson(res, 200, { note: savedNote, event: body.event, notes: room.notes });
     return true;
   }
 
   if (noteItemMatch && req.method === "PATCH") {
     const roomId = decodeURIComponent(noteItemMatch[1]);
     const noteId = decodeURIComponent(noteItemMatch[2]);
-    const room = await ensureRoom(roomId);
     const body = await readBody(req);
     const resolved = Boolean(body.resolved);
-    let found = false;
-    const notes = (room.notes ?? []).map((note) => {
-      if (note.id !== noteId) return note;
-      found = true;
+    const nextRoom = await ensureRoom(roomId, (room) => {
+      if (!(room.notes ?? []).some((note) => note.id === noteId)) throw Object.assign(new Error("Note not found"), { statusCode: 404 });
       return {
-        ...note,
-        resolved,
-        resolvedBy: resolved ? String(body.resolvedBy ?? "A collaborator").slice(0, 60) : undefined,
-        resolvedAt: resolved ? new Date().toISOString() : undefined,
+        notes: (room.notes ?? []).map((note) => note.id !== noteId ? note : {
+          ...note,
+          resolved,
+          resolvedBy: resolved ? String(body.resolvedBy ?? "A collaborator").slice(0, 60) : undefined,
+          resolvedAt: resolved ? new Date().toISOString() : undefined,
+        }),
+        events: eventsWithEvent(room.events ?? [], body.event),
       };
     });
-    if (!found) {
-      sendJson(res, 404, { error: "Note not found" });
-      return true;
-    }
-    const nextRoom = await updateNotes(roomId, notes);
-    if (body.event) await appendEvent(roomId, body.event);
     sendJson(res, 200, { notes: nextRoom.notes, event: body.event });
     return true;
   }
@@ -948,14 +1327,14 @@ async function handleApi(req, res, pathname) {
   if (noteItemMatch && req.method === "DELETE") {
     const roomId = decodeURIComponent(noteItemMatch[1]);
     const noteId = decodeURIComponent(noteItemMatch[2]);
-    const room = await ensureRoom(roomId);
-    if (!(room.notes ?? []).some((note) => note.id === noteId)) {
-      sendJson(res, 404, { error: "Note not found" });
-      return true;
-    }
     const body = await readBody(req);
-    const nextRoom = await updateNotes(roomId, (room.notes ?? []).filter((note) => note.id !== noteId));
-    if (body.event) await appendEvent(roomId, body.event);
+    const nextRoom = await ensureRoom(roomId, (room) => {
+      if (!(room.notes ?? []).some((note) => note.id === noteId)) throw Object.assign(new Error("Note not found"), { statusCode: 404 });
+      return {
+        notes: (room.notes ?? []).filter((note) => note.id !== noteId),
+        events: eventsWithEvent(room.events ?? [], body.event),
+      };
+    });
     sendJson(res, 200, { notes: nextRoom.notes, event: body.event });
     return true;
   }
@@ -968,9 +1347,77 @@ async function handleApi(req, res, pathname) {
   }
 
   const tracksMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/tracks$/);
+  const trackItemMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/tracks\/([^/]+)$/);
   if (tracksMatch && req.method === "GET") {
     const room = await ensureRoom(tracksMatch[1]);
     sendJson(res, 200, { tracks: room.tracks ?? initialTracks });
+    return true;
+  }
+
+  if (trackItemMatch && trackItemMatch[2] === "from-clip" && req.method === "POST") {
+    const roomId = decodeURIComponent(trackItemMatch[1]);
+    const body = await readBody(req);
+    let event;
+    const room = await ensureRoom(roomId, (current) => {
+      assertArrangementEpoch(current, body.arrangementEpoch);
+      const clip = (current.audioClips ?? []).find((item) => item.id === body.clipId);
+      if (!clip?.generation || !clip.trackId || !Number.isFinite(clip.duration) || clip.duration <= 0) throw Object.assign(new Error("Generated audio is no longer available."), { statusCode: 404 });
+      const tracks = current.tracks ?? [];
+      if (tracks.length >= 12) throw Object.assign(new Error("Track limit reached."), { statusCode: 409 });
+      if (tracks.some((track) => track.id === clip.trackId)) throw Object.assign(new Error("This generated track is already in the workstation."), { statusCode: 409 });
+      const baseName = clip.name.replace(/\.(mp3|wav)$/i, "").replace(/-/g, " ");
+      const duplicates = tracks.filter((track) => track.name === baseName || track.name.startsWith(`${baseName} `)).length;
+      const name = duplicates ? `${baseName} ${duplicates + 1}` : baseName;
+      const track = { id: clip.trackId, name, color: "#235fba", muted: false, solo: false, volume: 0.8, clips: 1, source: clip.generation.provider === "elevenlabs" ? "ai" : "audio" };
+      const region = { id: `region-${clip.id}`, clipId: clip.id, lane: tracks.length, label: name, actionLabel: "Move clip", left: 0, width: Math.max(1, Math.min(100, clip.duration / 120 * 100)), color: track.color, sourceOffset: 0, sourceDuration: clip.duration };
+      if ((current.timelineRegions ?? []).some((item) => item.id === region.id)) throw Object.assign(new Error("This generated clip is already on the timeline."), { statusCode: 409 });
+      event = { id: `event-${Date.now()}-${randomBytes(6).toString("hex")}`, kind: "remix", title: "Generated music added", detail: `${clip.name} added to the workstation.`, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) };
+      return { tracks: [...tracks, track], timelineRegions: [...(current.timelineRegions ?? []), region], events: [event, ...(current.events ?? [])].slice(0, 30) };
+    });
+    io.to(roomId).emit("room:tracks", { arrangementEpoch: room.arrangementEpoch ?? 0, tracks: room.tracks, event });
+    io.to(roomId).emit("room:timeline", { arrangementEpoch: room.arrangementEpoch ?? 0, timelineRegions: room.timelineRegions, event });
+    sendJson(res, 201, { tracks: room.tracks, timelineRegions: room.timelineRegions, event });
+    return true;
+  }
+
+  if (trackItemMatch && req.method === "DELETE") {
+    const roomId = decodeURIComponent(trackItemMatch[1]);
+    const trackId = decodeURIComponent(trackItemMatch[2]);
+    const body = await readBody(req);
+    let event;
+    const room = await ensureRoom(roomId, (current) => {
+      assertArrangementEpoch(current, body.arrangementEpoch);
+      const tracks = current.tracks ?? [];
+      const regions = current.timelineRegions ?? [];
+      if (!Array.isArray(body.previousTracks) || !Array.isArray(body.previousRegions) || JSON.stringify(tracks) !== JSON.stringify(body.previousTracks) || JSON.stringify(regions) !== JSON.stringify(body.previousRegions)) throw Object.assign(new Error("The room changed. Reload before deleting the track."), { statusCode: 409 });
+      const lane = tracks.findIndex((track) => track.id === trackId);
+      if (lane < 0) throw Object.assign(new Error("Track not found."), { statusCode: 404 });
+      if (tracks.length <= 1) throw Object.assign(new Error("At least one track must remain."), { statusCode: 409 });
+      if ((current.versions?.length ?? 0) >= maxRoomVersions) throw Object.assign(new Error("Version limit reached. Cannot save a recovery version before deleting the track."), { statusCode: 409 });
+      const removed = regions.filter((region, index) => (region.lane ?? Math.min(index, tracks.length - 1)) === lane);
+      const backup = { id: `version-${Date.now()}-${randomBytes(6).toString("hex")}`, name: `Before deleting ${tracks[lane].name}`.slice(0, 80), createdAt: new Date().toISOString(), snapshot: versionSnapshot(current) };
+      event = { id: `event-${Date.now()}-${randomBytes(6).toString("hex")}`, kind: "sync", title: "Track removed", detail: `${tracks[lane].name} and ${removed.length} timeline clips removed; a recovery version was saved.`, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) };
+      const notes = (current.notes ?? []).map((note) => {
+        const region = removed.find((item) => item.id === note.regionId);
+        if (!region) return note;
+        const offset = Math.max(0, Math.min(1, note.regionOffset ?? 0.5));
+        return { ...note, position: Math.max(0, Math.min(100, region.left + region.width * offset)) };
+      });
+      return {
+        arrangementEpoch: (current.arrangementEpoch ?? 0) + 1,
+        versions: [backup, ...(current.versions ?? [])],
+        tracks: tracks.filter((track) => track.id !== trackId),
+        timelineRegions: regions.flatMap((region, index) => {
+          const oldLane = region.lane ?? Math.min(index, tracks.length - 1);
+          return oldLane === lane ? [] : [{ ...region, lane: oldLane > lane ? oldLane - 1 : oldLane }];
+        }),
+        notes,
+        events: [event, ...(current.events ?? [])].slice(0, 30),
+      };
+    });
+    const state = { reason: "track-deleted", arrangementEpoch: room.arrangementEpoch, tracks: room.tracks, timelineRegions: room.timelineRegions, notes: room.notes, composition: room.composition, audioClips: publicAudioClips(room.audioClips), uploadedFileName: room.uploadedFileName ?? "", audioAvailable: Boolean(room.audioAvailable), referenceMuted: Boolean(room.referenceMuted), waveformPeaks: room.waveformPeaks ?? null, versions: publicVersions(room.versions), bpm: room.bpm ?? 96, timeSignature: room.timeSignature ?? "4/4", event };
+    io.to(roomId).emit("room:restored", state);
+    sendJson(res, 200, state);
     return true;
   }
 
@@ -988,9 +1435,16 @@ async function handleApi(req, res, pathname) {
     const mood = String(body.mood ?? "warm").trim().slice(0, 80);
     const musicKey = String(body.key ?? "C major").trim().slice(0, 24);
     const durationSeconds = Math.max(10, Math.min(120, Number(body.durationSeconds) || 30));
-    const instrumental = body.instrumental !== false;
     const requestedProvider = body.provider === "elevenlabs" ? "elevenlabs" : "collabmuse";
+    const instrumental = requestedProvider === "collabmuse" || body.instrumental !== false;
     const room = await ensureRoom(roomId);
+    const generationEpoch = room.arrangementEpoch ?? 0;
+    const referenceClip = typeof body.sourceClipId === "string" ? (room.audioClips ?? []).find((clip) => clip.id === body.sourceClipId) : null;
+    if (typeof body.sourceClipId === "string" && body.sourceClipId && !referenceClip) {
+      sendJson(res, 409, { error: "The selected reference clip is no longer in this room. Clear it or choose another clip before generating." });
+      return true;
+    }
+    const usableReferenceBpm = referenceTempo(referenceClip);
     let audioBuffer;
     let mimeType;
     let fileExtension;
@@ -998,6 +1452,7 @@ async function handleApi(req, res, pathname) {
     let model;
     let songId;
     let fallbackReason;
+    let generatedBpm = room.bpm ?? 96;
 
     if (requestedProvider === "elevenlabs" && process.env.ELEVENLABS_API_KEY) {
       const fullPrompt = [
@@ -1012,6 +1467,7 @@ async function handleApi(req, res, pathname) {
       try {
         const response = await fetch("https://api.elevenlabs.io/v1/music?output_format=mp3_44100_128", {
           method: "POST",
+          signal: AbortSignal.timeout(180000),
           headers: {
             "Content-Type": "application/json",
             "xi-api-key": process.env.ELEVENLABS_API_KEY,
@@ -1024,37 +1480,45 @@ async function handleApi(req, res, pathname) {
           }),
         });
         if (response.ok) {
-          audioBuffer = Buffer.from(await response.arrayBuffer());
-          mimeType = response.headers.get("content-type") || "audio/mpeg";
+          audioBuffer = await readMp3Response(response, maxAudioBytes);
+          mimeType = "audio/mpeg";
           fileExtension = "mp3";
           provider = "elevenlabs";
           model = process.env.ELEVENLABS_MUSIC_MODEL ?? "music_v2_5";
           songId = response.headers.get("song-id") || undefined;
         } else {
-          const detail = (await response.text()).slice(0, 1200);
-          console.error(`ElevenLabs Music returned ${response.status}:`, detail);
+          discardMusicErrorResponse(response);
+          console.error(`ElevenLabs Music returned ${response.status}.`);
           fallbackReason = response.status === 402
-            ? "ElevenLabs requires a paid plan; generated with the CollabMuse engine instead."
-            : "ElevenLabs was unavailable; generated with the CollabMuse engine instead.";
+            ? "ElevenLabs requires a paid plan. Choose the built-in arranger or configure a paid account."
+            : "ElevenLabs could not generate this track. Check the service configuration and try again.";
         }
       } catch (error) {
         console.error("ElevenLabs Music request failed:", error);
-        fallbackReason = "ElevenLabs was unavailable; generated with the CollabMuse engine instead.";
+        fallbackReason = error instanceof Error && error.message.startsWith("Music service")
+          ? error.message
+          : "ElevenLabs was unavailable or timed out. Check the connection and try again.";
       }
     } else if (requestedProvider === "elevenlabs") {
-      fallbackReason = "ElevenLabs is not configured; generated with the CollabMuse engine instead.";
+      fallbackReason = "ElevenLabs is not configured. Choose the built-in arranger or configure the API key.";
+    }
+
+    if (!audioBuffer && requestedProvider === "elevenlabs") {
+      sendJson(res, 503, { error: fallbackReason });
+      return true;
     }
 
     if (!audioBuffer) {
-      const rendered = renderLocalMusic({
+      const rendered = await renderLocalMusicAsync({
         prompt,
         style,
         mood,
         key: musicKey,
         durationSeconds,
-        bpm: room.bpm ?? 96,
+        bpm: usableReferenceBpm ?? room.bpm ?? 96,
       });
-      audioBuffer = rendered.buffer;
+      audioBuffer = Buffer.from(rendered.buffer);
+      generatedBpm = rendered.bpm;
       mimeType = "audio/wav";
       fileExtension = "wav";
       provider = "collabmuse";
@@ -1067,8 +1531,8 @@ async function handleApi(req, res, pathname) {
     }
 
     const clipId = `clip-${Date.now()}-${randomBytes(3).toString("hex")}`;
-    const trackId = `ai-music-${Date.now().toString(36)}`;
-    const titleBase = `${mood}-${style}-AI-track`;
+    const trackId = `ai-music-${Date.now().toString(36)}-${randomBytes(6).toString("hex")}`;
+    const titleBase = `${mood}-${style}-${provider === "elevenlabs" ? "AI-track" : "arrangement"}`;
     const fileName = `${safePathSegment(titleBase, "ai-music")}.${fileExtension}`;
     const storageName = `${clipId}-${fileName}`;
     const roomDirectory = path.join(uploadsDir, safePathSegment(roomId, "room"));
@@ -1083,12 +1547,6 @@ async function handleApi(req, res, pathname) {
       storageName,
       mimeType,
       createdAt: new Date().toISOString(),
-      analysis: {
-        bpm: room.bpm ?? 96,
-        loudnessDb: 0,
-        energy: /energetic|bright|intense/i.test(mood) ? "high" : /calm|soft|ambient/i.test(`${mood} ${style}`) ? "low" : "medium",
-        dynamics: "varied",
-      },
       waveformPeaks: [],
       generation: {
         provider,
@@ -1098,10 +1556,24 @@ async function handleApi(req, res, pathname) {
         mood,
         key: musicKey,
         instrumental,
+        ...(provider === "collabmuse" ? { bpm: generatedBpm } : {}),
+        ...(provider === "collabmuse" && usableReferenceBpm ? { referenceClipId: referenceClip.id, referenceTempoBpm: usableReferenceBpm } : {}),
         songId,
       },
     };
-    await updateAudioClips(roomId, [...(room.audioClips ?? []), clip].slice(-24));
+    let updatedRoom;
+    try {
+      const user = await getSessionUser(req);
+      updatedRoom = await ensureRoom(roomId, (current) => {
+        assertRoomEditor(current, user);
+        assertArrangementEpoch(current, generationEpoch);
+        return { audioClips: [...(current.audioClips ?? []), clip] };
+      });
+    } catch (error) {
+      await rm(path.join(roomDirectory, storageName), { force: true });
+      throw error;
+    }
+    io.to(roomId).emit("room:clips", { arrangementEpoch: updatedRoom.arrangementEpoch ?? 0, audioClips: publicAudioClips(updatedRoom.audioClips) });
     sendJson(res, 201, {
       clip: publicAudioClips([clip])[0],
       audioUrl: `/api/rooms/${encodeURIComponent(roomId)}/clips/${encodeURIComponent(clip.id)}/audio`,
@@ -1113,6 +1585,10 @@ async function handleApi(req, res, pathname) {
   const composeMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/compose$/);
   if (composeMatch && req.method === "POST") {
     const body = await readBody(req);
+    const roomId = decodeURIComponent(composeMatch[1]);
+    const initialRoom = await ensureRoom(roomId);
+    const compositionEpoch = initialRoom.arrangementEpoch ?? 0;
+    const initialComposition = JSON.stringify(initialRoom.composition ?? null);
     const input = {
       prompt: String(body.prompt ?? "").slice(0, 500),
       key: String(body.key ?? "C").slice(0, 3),
@@ -1132,7 +1608,16 @@ async function handleApi(req, res, pathname) {
       fallbackReason = "AI service unavailable; generated locally";
     }
 
-    await updateComposition(composeMatch[1], composition);
+    const user = await getSessionUser(req);
+    const updatedRoom = await ensureRoom(roomId, (room) => {
+      assertRoomEditor(room, user);
+      assertArrangementEpoch(room, compositionEpoch);
+      if (JSON.stringify(room.composition ?? null) !== initialComposition) {
+        throw Object.assign(new Error("The melody changed while generating. Review the latest version and try again."), { statusCode: 409 });
+      }
+      return { composition };
+    });
+    io.to(roomId).emit("room:composition", { arrangementEpoch: updatedRoom.arrangementEpoch ?? 0, composition: updatedRoom.composition });
     sendJson(res, 200, { composition, fallbackReason });
     return true;
   }
@@ -1144,9 +1629,15 @@ async function handleApi(req, res, pathname) {
       return true;
     }
 
-    const tracks = body.tracks.slice(0, 12);
-    const room = await updateTracks(tracksMatch[1], tracks);
+    const room = await ensureRoom(tracksMatch[1], (current) => {
+      assertArrangementEpoch(current, body.arrangementEpoch);
+      if (!Array.isArray(body.previousTracks)) throw Object.assign(new Error("Reload the room before saving tracks."), { statusCode: 409 });
+      const tracks = mergeRoomEdits(current.tracks ?? [], body.previousTracks, body.tracks);
+      if (tracks.length > 12) throw Object.assign(new Error("Track limit reached."), { statusCode: 409 });
+      return { tracks };
+    });
     if (body.event) await appendEvent(tracksMatch[1], body.event);
+    io.to(tracksMatch[1]).emit("room:tracks", { arrangementEpoch: room.arrangementEpoch ?? 0, tracks: room.tracks, event: body.event });
     sendJson(res, 200, { tracks: room.tracks, event: body.event });
     return true;
   }
@@ -1158,8 +1649,16 @@ async function handleApi(req, res, pathname) {
       return true;
     }
 
-    const room = await updateTimelineRegions(timelineMatch[1], body.timelineRegions);
+    const room = await ensureRoom(timelineMatch[1], (current) => {
+      assertArrangementEpoch(current, body.arrangementEpoch);
+      if (!Array.isArray(body.previousRegions)) throw Object.assign(new Error("Reload the room before saving timeline changes."), { statusCode: 409 });
+      if (body.split || body.merge) throw Object.assign(new Error("Reconnect before splitting or undoing a split."), { statusCode: 409 });
+      const timelineRegions = mergeRoomEdits(current.timelineRegions ?? [], body.previousRegions, body.timelineRegions);
+      assertKnownRegionClips(current, timelineRegions);
+      return { timelineRegions };
+    });
     if (body.event) await appendEvent(timelineMatch[1], body.event);
+    io.to(timelineMatch[1]).emit("room:timeline", { arrangementEpoch: room.arrangementEpoch ?? 0, timelineRegions: room.timelineRegions, event: body.event });
     sendJson(res, 200, {
       timelineRegions: room.timelineRegions,
       tracks: room.tracks ?? initialTracks,
@@ -1168,6 +1667,41 @@ async function handleApi(req, res, pathname) {
       event: body.event,
       events: room.events,
     });
+    return true;
+  }
+
+  const versionPreviewMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/versions\/([^/]+)\/preview(?:\/(audio|clips\/([^/]+)))?$/);
+  if (versionPreviewMatch && req.method === "GET") {
+    const roomId = decodeURIComponent(versionPreviewMatch[1]);
+    const versionId = decodeURIComponent(versionPreviewMatch[2]);
+    const room = await ensureRoom(roomId);
+    const version = (room.versions ?? []).find((item) => item.id === versionId);
+    if (!version) { sendJson(res, 404, { error: "Version not found" }); return true; }
+    const snapshot = version.snapshot;
+    if (!versionPreviewMatch[3]) {
+      sendJson(res, 200, {
+        tracks: snapshot.tracks ?? [], timelineRegions: snapshot.timelineRegions ?? [],
+        audioClips: publicAudioClips(snapshot.audioClips),
+        audioAvailable: Boolean(snapshot.audioAvailable && snapshot.audioStorageName),
+        referenceMuted: Boolean(snapshot.referenceMuted),
+        legacyReferenceUnknown: !Object.hasOwn(snapshot, "audioStorageName"),
+      });
+      return true;
+    }
+    const clipId = versionPreviewMatch[4] ? decodeURIComponent(versionPreviewMatch[4]) : null;
+    const clip = clipId ? (snapshot.audioClips ?? []).find((item) => item.id === clipId) : null;
+    const storageName = clipId ? clip?.storageName : snapshot.audioStorageName;
+    if (!isSafeAudioName(storageName) || (!clipId && !snapshot.audioAvailable)) {
+      sendJson(res, 404, { error: "Version audio not found" });
+      return true;
+    }
+    try {
+      const data = await readFile(path.join(uploadsDir, safePathSegment(roomId, "room"), storageName));
+      sendAudio(req, res, data, clipId ? clip?.mimeType : snapshot.audioMimeType);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      sendJson(res, 404, { error: "Version audio file is missing" });
+    }
     return true;
   }
 
@@ -1182,24 +1716,19 @@ async function handleApi(req, res, pathname) {
 
   if (versionsMatch && req.method === "POST") {
     const roomId = decodeURIComponent(versionsMatch[1]);
-    const room = await ensureRoom(roomId);
     const body = await readBody(req);
     const createdAt = new Date().toISOString();
-    const version = {
-      id: `version-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      name: String(body.name ?? `Version ${(room.versions?.length ?? 0) + 1}`).trim().slice(0, 80),
-      createdAt,
-      snapshot: {
-        tracks: room.tracks ?? initialTracks,
-        timelineRegions: room.timelineRegions ?? initialTimelineRegions,
-        composition: room.composition ?? null,
-        audioClips: room.audioClips ?? [],
-        bpm: room.bpm ?? 96,
-        timeSignature: room.timeSignature ?? "4/4",
-      },
-    };
-    const versions = [version, ...(room.versions ?? [])].slice(0, 20);
-    const nextRoom = await ensureRoom(roomId, { versions });
+    let version;
+    const nextRoom = await ensureRoom(roomId, (room) => {
+      if ((room.versions?.length ?? 0) >= maxRoomVersions) throw Object.assign(new Error("Version limit reached. Download a backup and create a new project to continue."), { statusCode: 409 });
+      version = {
+        id: `version-${Date.now()}-${randomBytes(6).toString("hex")}`,
+        name: String(body.name ?? `Version ${(room.versions?.length ?? 0) + 1}`).trim().slice(0, 80),
+        createdAt,
+        snapshot: versionSnapshot(room),
+      };
+      return { versions: [version, ...(room.versions ?? [])] };
+    });
     if (body.event) await appendEvent(roomId, body.event);
     sendJson(res, 200, { version: publicVersions([version])[0], versions: publicVersions(nextRoom.versions), event: body.event });
     return true;
@@ -1208,39 +1737,73 @@ async function handleApi(req, res, pathname) {
   if (versionRestoreMatch && req.method === "POST") {
     const roomId = decodeURIComponent(versionRestoreMatch[1]);
     const versionId = decodeURIComponent(versionRestoreMatch[2]);
-    const room = await ensureRoom(roomId);
-    const version = (room.versions ?? []).find((item) => item.id === versionId);
-    if (!version) {
-      sendJson(res, 404, { error: "Version not found" });
-      return true;
-    }
     const body = await readBody(req);
-    const restoredRoom = await ensureRoom(roomId, {
+    const restoredRoom = await ensureRoom(roomId, async (room) => {
+      const version = (room.versions ?? []).find((item) => item.id === versionId);
+      if (!version) throw Object.assign(new Error("Version not found"), { statusCode: 404 });
+      if ((room.versions?.length ?? 0) >= maxRoomVersions) throw Object.assign(new Error("Version limit reached. Cannot save the current state before restoring."), { statusCode: 409 });
+      const snapshot = version.snapshot;
+      const references = (snapshot.audioClips ?? []).map((clip) => clip.storageName);
+      if (Object.hasOwn(snapshot, "audioStorageName") && snapshot.audioAvailable) references.push(snapshot.audioStorageName);
+      for (const name of new Set(references)) {
+        if (typeof name !== "string" || !name || path.basename(name) !== name) throw Object.assign(new Error("This version has missing audio metadata. The current project was not changed."), { statusCode: 409 });
+        try {
+          const info = await stat(path.join(uploadsDir, safePathSegment(roomId, "room"), name));
+          if (!info.isFile()) throw new Error("Not a file");
+        } catch {
+          throw Object.assign(new Error("This version refers to a missing audio file. The current project was not changed."), { statusCode: 409 });
+        }
+      }
+      const backup = {
+        id: `version-${Date.now()}-${randomBytes(6).toString("hex")}`,
+        name: `Before restoring ${version.name}`.slice(0, 80),
+        createdAt: new Date().toISOString(),
+        snapshot: versionSnapshot(room),
+      };
+      return {
+      arrangementEpoch: (room.arrangementEpoch ?? 0) + 1,
+      versions: [backup, ...(room.versions ?? [])],
       tracks: version.snapshot.tracks ?? initialTracks,
       timelineRegions: version.snapshot.timelineRegions ?? initialTimelineRegions,
       composition: version.snapshot.composition ?? null,
       audioClips: version.snapshot.audioClips ?? [],
+      referenceMuted: Boolean(version.snapshot.referenceMuted),
       bpm: version.snapshot.bpm ?? 96,
       timeSignature: version.snapshot.timeSignature ?? "4/4",
+      ...(Object.hasOwn(version.snapshot, "audioStorageName") ? {
+        uploadedFileName: version.snapshot.uploadedFileName ?? "",
+        audioAvailable: version.snapshot.audioAvailable ?? false,
+        audioStorageName: version.snapshot.audioStorageName,
+        audioMimeType: version.snapshot.audioMimeType ?? null,
+        waveformPeaks: version.snapshot.waveformPeaks ?? null,
+      } : {}),
+      };
     });
     if (body.event) await appendEvent(roomId, body.event);
-    sendJson(res, 200, {
+    const restoredState = {
       tracks: restoredRoom.tracks,
       timelineRegions: restoredRoom.timelineRegions,
       composition: restoredRoom.composition,
       audioClips: publicAudioClips(restoredRoom.audioClips),
+      uploadedFileName: restoredRoom.uploadedFileName ?? "",
+      audioAvailable: restoredRoom.audioAvailable ?? false,
+      referenceMuted: Boolean(restoredRoom.referenceMuted),
+      waveformPeaks: restoredRoom.waveformPeaks ?? null,
       bpm: restoredRoom.bpm ?? 96,
       timeSignature: restoredRoom.timeSignature ?? "4/4",
       versions: publicVersions(restoredRoom.versions),
+      arrangementEpoch: restoredRoom.arrangementEpoch,
       event: body.event,
-    });
+    };
+    io.to(roomId).emit("room:restored", restoredState);
+    sendJson(res, 200, restoredState);
     return true;
   }
 
   const roomMatch = pathname.match(/^\/api\/rooms\/([^/]+)$/);
   if (roomMatch && req.method === "GET") {
     const room = await ensureRoom(roomMatch[1]);
-    sendJson(res, 200, { room });
+    sendJson(res, 200, { room: publicRoom(room) });
     return true;
   }
 
@@ -1252,8 +1815,18 @@ async function handleApi(req, res, pathname) {
       return true;
     }
     const body = await readBody(req);
-    const room = await ensureRoom(roomMatch[1], body);
-    sendJson(res, 200, { room });
+    const allowed = new Set(["title", "bpm", "timeSignature", "composition", "arrangementEpoch"]);
+    if (Object.keys(body).some((key) => !allowed.has(key))) {
+      sendJson(res, 400, { error: "This room setting cannot be changed here." });
+      return true;
+    }
+    validateTimingPatch(body);
+    const room = await ensureRoom(roomMatch[1], (current) => {
+      if (["composition", "bpm", "timeSignature"].some((key) => Object.hasOwn(body, key))) assertArrangementEpoch(current, body.arrangementEpoch);
+      const { arrangementEpoch: _epoch, ...patch } = body;
+      return patch;
+    });
+    sendJson(res, 200, { room: publicRoom(room) });
     return true;
   }
 
@@ -1271,16 +1844,9 @@ async function handleApi(req, res, pathname) {
       return true;
     }
 
-    const store = await readStore();
-    if (!store.rooms[roomId]) {
-      sendJson(res, 404, { error: "Room not found" });
-      return true;
-    }
-
-    delete store.rooms[roomId];
-    await writeStore(store);
-    await rm(path.join(uploadsDir, safePathSegment(roomId, "room")), { recursive: true, force: true });
+    await ensureRoom(roomId, { deletedAt: new Date().toISOString() });
     io.to(roomId).emit("room:deleted", { roomId });
+    io.in(roomId).socketsLeave(roomId);
     sendJson(res, 200, { deleted: true, roomId });
     return true;
   }
@@ -1300,7 +1866,7 @@ const httpServer = createServer(async (req, res) => {
     await handle(req, res);
   } catch (error) {
     console.error(error);
-    sendJson(res, 500, { error: "Internal server error" });
+    sendJson(res, error.statusCode ?? 500, { error: error.statusCode ? error.message : "Internal server error" });
   }
 });
 
@@ -1309,21 +1875,59 @@ const io = new Server(httpServer, {
   cors: { origin: "*" },
 });
 
+const roomEditQueues = new Map();
+function queueRoomEdit(roomId, operation) {
+  const previous = roomEditQueues.get(roomId) ?? Promise.resolve();
+  const current = previous.catch(() => {}).then(operation);
+  roomEditQueues.set(roomId, current);
+  void current.finally(() => {
+    if (roomEditQueues.get(roomId) === current) roomEditQueues.delete(roomId);
+  }).catch(() => {});
+  return current;
+}
+
 async function broadcastPresence(roomId) {
   const sockets = await io.in(roomId).fetchSockets();
   io.to(roomId).emit("room:presence", { roomId, count: sockets.length });
 }
 
 io.on("connection", (socket) => {
+  let joinGeneration = 0;
+  const mayEdit = async (roomId) => {
+    if (socket.data.roomId !== roomId) return false;
+    try {
+      const room = await ensureRoom(roomId);
+      const user = await getSessionUser(socket.request);
+      return canAccessRoom(room, user) && canEditRoom(room, user);
+    } catch (error) {
+      console.error("Unable to verify room edit access", error);
+      return false;
+    }
+  };
   socket.on("room:join", async (roomId = "demo") => {
+    const generation = ++joinGeneration;
     const previousRoomId = socket.data.roomId;
-    if (previousRoomId && previousRoomId !== roomId) {
+    socket.data.roomId = null;
+    socket.data.canEdit = false;
+    if (previousRoomId) {
       socket.leave(previousRoomId);
       await broadcastPresence(previousRoomId);
     }
+    if (generation !== joinGeneration || !socket.connected) return;
 
-    const room = await ensureRoom(roomId);
-    const user = await getSessionUser(socket.request);
+    let room;
+    let user;
+    try {
+      user = await getSessionUser(socket.request);
+      if (generation !== joinGeneration || !socket.connected) return;
+      room = await ensureRoom(roomId);
+    } catch (error) {
+      if (generation !== joinGeneration || !socket.connected) return;
+      if (error.statusCode !== 404) console.error("Unable to load room", error);
+      socket.emit("room:access-denied", { roomId });
+      return;
+    }
+    if (generation !== joinGeneration || !socket.connected) return;
     if (!canAccessRoom(room, user)) {
       socket.data.canEdit = false;
       socket.emit("room:access-denied", { roomId });
@@ -1340,6 +1944,7 @@ io.on("connection", (socket) => {
       uploadedFileName: room.uploadedFileName,
       waveformPeaks: room.waveformPeaks,
       audioAvailable: room.audioAvailable,
+      referenceMuted: Boolean(room.referenceMuted),
       timelineRegions: room.timelineRegions,
       tracks: room.tracks ?? initialTracks,
       composition: room.composition ?? null,
@@ -1347,67 +1952,182 @@ io.on("connection", (socket) => {
       versions: publicVersions(room.versions),
       bpm: room.bpm ?? 96,
       timeSignature: room.timeSignature ?? "4/4",
+      arrangementEpoch: room.arrangementEpoch ?? 0,
     });
     await broadcastPresence(roomId);
   });
 
   socket.on("room:event", async ({ roomId = "demo", event }) => {
-    if (!socket.data.canEdit || socket.data.roomId !== roomId || !event) return;
+    if (!event || !(await mayEdit(roomId))) return;
     await appendEvent(roomId, event);
     socket.to(roomId).emit("room:event", event);
   });
 
-  socket.on("room:upload", async ({ roomId = "demo", fileName, waveformPeaks = null, audioAvailable, event }) => {
-    if (!socket.data.canEdit || socket.data.roomId !== roomId || !fileName) return;
-    await updateUpload(roomId, fileName, waveformPeaks, audioAvailable);
-    if (event) await appendEvent(roomId, event);
-    socket.to(roomId).emit("room:upload", { fileName, waveformPeaks, audioAvailable, event });
+  socket.on("room:reference-mute", ({ roomId = "demo", muted, arrangementEpoch }) => {
+    if (typeof muted !== "boolean") return;
+    void queueRoomEdit(roomId, async () => {
+      try {
+        if (!(await mayEdit(roomId))) throw new Error("Editing access is no longer available");
+        const room = await ensureRoom(roomId, (current) => { assertArrangementEpoch(current, arrangementEpoch); return { referenceMuted: muted }; });
+        io.to(roomId).emit("room:reference-mute", { muted: Boolean(room.referenceMuted), arrangementEpoch: room.arrangementEpoch ?? 0 });
+      } catch (error) {
+        socket.emit("room:sync-error", { message: error.statusCode === 409 ? error.message : "Could not save reference audio mute state." });
+      }
+    });
   });
 
-  socket.on("room:note", async ({ roomId = "demo", note, event }) => {
-    if (!socket.data.canEdit || socket.data.roomId !== roomId || !note) return;
-    await appendNote(roomId, note);
+  socket.on("room:upload", async ({ roomId = "demo", event }) => {
+    if (!(await mayEdit(roomId))) return;
     if (event) await appendEvent(roomId, event);
-    socket.to(roomId).emit("room:note", { note, event });
+    const room = await ensureRoom(roomId);
+    socket.to(roomId).emit("room:upload", { arrangementEpoch: room.arrangementEpoch ?? 0, fileName: room.uploadedFileName, waveformPeaks: room.waveformPeaks, audioAvailable: room.audioAvailable, event });
+  });
+
+  socket.on("room:note", async ({ roomId = "demo", note, event }, acknowledge) => {
+    try {
+      if (!note || !(await mayEdit(roomId))) throw new Error("Editing access is no longer available");
+      const room = await appendNote(roomId, note, event);
+      const savedNote = room.notes.find((item) => item.id === note.id);
+      socket.to(roomId).emit("room:note", { note: savedNote, event });
+      if (typeof acknowledge === "function") acknowledge({ ok: true, note: savedNote });
+    } catch (error) {
+      console.error("Could not save note", error);
+      if (typeof acknowledge === "function") acknowledge({ ok: false, error: error instanceof Error ? error.message : "Could not save the note." });
+      else socket.emit("room:sync-error", { message: "Could not save the note. Check your access and connection." });
+    }
+  });
+
+  socket.on("room:note-reply", async ({ roomId = "demo", noteId, reply }, acknowledge) => {
+    try {
+      if (!(await mayEdit(roomId))) throw new Error("Editing access is no longer available.");
+      if (typeof noteId !== "string" || typeof reply?.id !== "string" || !reply.id || reply.id.length > 160 || typeof reply.message !== "string" || !reply.message.trim() || reply.message.length > 1000) throw new Error("Reply is invalid.");
+      const user = await getSessionUser(socket.request);
+      let savedReply = { id: reply.id, author: String(user?.name ?? reply.author ?? "Guest creator").slice(0, 60), message: reply.message.trim(), time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) };
+      let found = false;
+      await ensureRoom(roomId, (room) => ({ notes: (room.notes ?? []).map((note) => {
+        if (note.id !== noteId) return note;
+        found = true;
+        const replies = note.replies ?? [];
+        const existing = replies.find((item) => item.id === savedReply.id);
+        if (existing) { savedReply = existing; return note; }
+        if (replies.length >= 200) throw new Error("This note has reached the reply limit.");
+        return { ...note, replies: [...replies, savedReply] };
+      }) }));
+      if (!found) throw new Error("This note no longer exists.");
+      io.to(roomId).emit("room:note-reply", { noteId, reply: savedReply });
+      if (typeof acknowledge === "function") acknowledge({ ok: true });
+    } catch (error) {
+      if (typeof acknowledge === "function") acknowledge({ ok: false, error: error instanceof Error ? error.message : "Reply could not be saved." });
+    }
+  });
+
+  socket.on("room:note-state", async ({ roomId = "demo", noteId, event }) => {
+    if (typeof noteId !== "string" || !(await mayEdit(roomId))) return;
+    const room = await ensureRoom(roomId);
+    const note = (room.notes ?? []).find((item) => item.id === noteId);
+    const state = note ? { resolved: Boolean(note.resolved), resolvedBy: note.resolvedBy, resolvedAt: note.resolvedAt } : null;
+    socket.to(roomId).emit("room:note-state", { noteId, state, event });
   });
 
   socket.on("room:notes", async ({ roomId = "demo", notes, event }) => {
-    if (!socket.data.canEdit || socket.data.roomId !== roomId || !Array.isArray(notes)) return;
-    await updateNotes(roomId, notes);
+    if (!Array.isArray(notes) || !(await mayEdit(roomId))) return;
     if (event) await appendEvent(roomId, event);
-    socket.to(roomId).emit("room:notes", { notes, event });
+    const room = await ensureRoom(roomId);
+    socket.to(roomId).emit("room:notes", { notes: room.notes, event });
   });
 
-  socket.on("room:timeline", async ({ roomId = "demo", timelineRegions, event }) => {
-    if (!socket.data.canEdit || socket.data.roomId !== roomId || !Array.isArray(timelineRegions)) return;
-    await updateTimelineRegions(roomId, timelineRegions);
-    if (event) await appendEvent(roomId, event);
-    socket.to(roomId).emit("room:timeline", { timelineRegions, event });
+  socket.on("room:timeline", ({ roomId = "demo", timelineRegions, previousRegions, event, arrangementEpoch, split, merge }) => {
+    if (!Array.isArray(timelineRegions)) return;
+    void queueRoomEdit(roomId, async () => {
+      try {
+        if (!(await mayEdit(roomId))) throw new Error("Editing access is no longer available");
+        let notesChanged = false;
+        const room = await ensureRoom(roomId, (current) => {
+          assertArrangementEpoch(current, arrangementEpoch);
+          const merged = Array.isArray(previousRegions) ? mergeRoomEdits(current.timelineRegions ?? [], previousRegions, timelineRegions) : timelineRegions;
+          assertKnownRegionClips(current, merged);
+          const withEvent = (patch) => event ? { ...patch, events: eventsWithEvent(current.events ?? [], event) } : patch;
+          if (merge) {
+            const first = Array.isArray(previousRegions) ? previousRegions.find((item) => item.id === merge.originalId) : null;
+            const second = Array.isArray(previousRegions) ? previousRegions.find((item) => item.id === merge.newId) : null;
+            const currentFirst = (current.timelineRegions ?? []).find((item) => item.id === merge.originalId);
+            const currentSecond = (current.timelineRegions ?? []).find((item) => item.id === merge.newId);
+            const combined = merged.find((item) => item.id === merge.originalId);
+            const samePart = (a, b) => a && b && ["left", "width", "lane", "clipId", "sourceOffset", "sourceDuration"].every((key) => a[key] === b[key]);
+            if (!samePart(first, currentFirst) || !samePart(second, currentSecond) || !combined || merged.some((item) => item.id === merge.newId) ||
+                Math.abs(second.left - (first.left + first.width)) > 0.11 || combined.left !== first.left || Math.abs(combined.width - first.width - second.width) > 0.11 ||
+                first.clipId !== second.clipId || combined.clipId !== first.clipId) {
+              throw Object.assign(new Error("The clips changed before the split could be undone. Reload and try again."), { statusCode: 409 });
+            }
+            return withEvent({ timelineRegions: merged, notes: remapMergedNotes(current.notes ?? [], first, second, combined) });
+          }
+          if (!split) {
+            const preserved = preserveRemovedRegionNotePositions(current.notes ?? [], current.timelineRegions ?? [], merged);
+            notesChanged = preserved.changed;
+            return withEvent({ timelineRegions: merged, ...(preserved.changed ? { notes: preserved.notes } : {}) });
+          }
+          const previous = Array.isArray(previousRegions) ? previousRegions.find((item) => item.id === split.originalId) : null;
+          const currentRegion = (current.timelineRegions ?? []).find((item) => item.id === split.originalId);
+          const first = merged.find((item) => item.id === split.originalId);
+          const second = merged.find((item) => item.id === split.newId);
+          if (!previous || !currentRegion || !first || !second ||
+              previous.left !== currentRegion.left || previous.width !== currentRegion.width || previous.clipId !== currentRegion.clipId ||
+              previous.lane !== currentRegion.lane || previous.sourceOffset !== currentRegion.sourceOffset || previous.sourceDuration !== currentRegion.sourceDuration ||
+              first.left !== previous.left || Math.abs(first.width + second.width - previous.width) > 0.11 ||
+              Math.abs(second.left - (first.left + first.width)) > 0.11 || first.clipId !== previous.clipId || second.clipId !== previous.clipId) {
+            throw Object.assign(new Error("The clip changed before it could be split. Reload and try again."), { statusCode: 409 });
+          }
+          return withEvent({ timelineRegions: merged, notes: remapSplitNotes(current.notes ?? [], previous, first, second) });
+        });
+        io.to(roomId).emit("room:timeline", { arrangementEpoch: room.arrangementEpoch ?? 0, timelineRegions: room.timelineRegions, ...(split || merge || notesChanged ? { notes: room.notes } : {}), event });
+      } catch (error) {
+        console.error("Could not save timeline", error);
+        socket.emit("room:sync-error", { message: error.statusCode === 409 ? error.message : "Could not save timeline changes. Reloading the saved room." });
+      }
+    });
   });
 
-  socket.on("room:tracks", async ({ roomId = "demo", tracks, event }) => {
-    if (!socket.data.canEdit || socket.data.roomId !== roomId || !Array.isArray(tracks)) return;
-    const nextTracks = tracks.slice(0, 12);
-    await updateTracks(roomId, nextTracks);
-    if (event) await appendEvent(roomId, event);
-    socket.to(roomId).emit("room:tracks", { tracks: nextTracks, event });
+  socket.on("room:tracks", ({ roomId = "demo", tracks, previousTracks, event, arrangementEpoch }) => {
+    if (!Array.isArray(tracks)) return;
+    void queueRoomEdit(roomId, async () => {
+      try {
+        if (!(await mayEdit(roomId))) throw new Error("Editing access is no longer available");
+        const room = await ensureRoom(roomId, (current) => {
+          assertArrangementEpoch(current, arrangementEpoch);
+          const merged = Array.isArray(previousTracks) ? mergeRoomEdits(current.tracks ?? [], previousTracks, tracks) : tracks;
+          if (merged.length > 12) throw new Error("Track limit reached");
+          return { tracks: merged, ...(event ? { events: eventsWithEvent(current.events ?? [], event) } : {}) };
+        });
+        io.to(roomId).emit("room:tracks", { arrangementEpoch: room.arrangementEpoch ?? 0, tracks: room.tracks, event });
+      } catch (error) {
+        console.error("Could not save tracks", error);
+        socket.emit("room:sync-error", { message: error.statusCode === 409 ? error.message : "Could not save track changes. Check access and the 12-track limit." });
+      }
+    });
   });
 
-  socket.on("room:composition", async ({ roomId = "demo", composition, event }) => {
-    if (!socket.data.canEdit || socket.data.roomId !== roomId || !composition || !Array.isArray(composition.notes)) return;
-    await updateComposition(roomId, composition);
-    if (event) await appendEvent(roomId, event);
-    socket.to(roomId).emit("room:composition", { composition, event });
+  socket.on("room:composition", ({ roomId = "demo", composition, event, arrangementEpoch }) => {
+    if (!composition || !Array.isArray(composition.notes)) return;
+    void queueRoomEdit(roomId, async () => {
+      try {
+        if (!(await mayEdit(roomId))) throw new Error("Editing access is no longer available");
+        const room = await ensureRoom(roomId, (current) => { assertArrangementEpoch(current, arrangementEpoch); return { composition, ...(event ? { events: eventsWithEvent(current.events ?? [], event) } : {}) }; });
+        io.to(roomId).emit("room:composition", { arrangementEpoch: room.arrangementEpoch ?? 0, composition: room.composition, event });
+      } catch (error) {
+        socket.emit("room:sync-error", { message: error.statusCode === 409 ? error.message : "Could not save melody changes. Reloading the saved room." });
+      }
+    });
   });
 
   socket.on("room:clips", async ({ roomId = "demo", audioClips, event }) => {
-    if (!socket.data.canEdit || socket.data.roomId !== roomId || !Array.isArray(audioClips)) return;
+    if (!Array.isArray(audioClips) || !(await mayEdit(roomId))) return;
     if (event) await appendEvent(roomId, event);
-    socket.to(roomId).emit("room:clips", { audioClips, event });
+    const room = await ensureRoom(roomId);
+    io.to(roomId).emit("room:clips", { arrangementEpoch: room.arrangementEpoch ?? 0, audioClips: publicAudioClips(room.audioClips), event });
   });
 
-  socket.on("room:transport", ({ roomId = "demo", command, userName = "A collaborator" }) => {
-    if (!socket.data.canEdit || socket.data.roomId !== roomId || !command) return;
+  socket.on("room:transport", async ({ roomId = "demo", command, userName = "A collaborator" }) => {
+    if (!command || !(await mayEdit(roomId))) return;
     if (!["play", "pause", "seek"].includes(command.action) || !Number.isFinite(command.position)) return;
     socket.to(roomId).emit("room:transport", {
       id: String(command.id ?? Date.now()),
@@ -1417,13 +2137,22 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("room:settings", async ({ roomId = "demo", bpm, timeSignature, event }) => {
-    if (!socket.data.canEdit || socket.data.roomId !== roomId) return;
-    const normalizedBpm = Math.max(40, Math.min(220, Number(bpm) || 96));
-    const normalizedSignature = ["4/4", "3/4", "6/8"].includes(timeSignature) ? timeSignature : "4/4";
-    await ensureRoom(roomId, { bpm: normalizedBpm, timeSignature: normalizedSignature });
-    if (event) await appendEvent(roomId, event);
-    socket.to(roomId).emit("room:settings", { bpm: normalizedBpm, timeSignature: normalizedSignature, event });
+  socket.on("room:settings", ({ roomId = "demo", bpm, timeSignature, event, arrangementEpoch }) => {
+    void queueRoomEdit(roomId, async () => {
+      try {
+        if (!(await mayEdit(roomId))) throw new Error("Editing access is no longer available");
+        validateTimingPatch({ bpm, timeSignature });
+        const user = await getSessionUser(socket.request);
+        const room = await ensureRoom(roomId, (current) => {
+          assertRoomEditor(current, user);
+          assertArrangementEpoch(current, arrangementEpoch);
+          return { bpm, timeSignature, ...(event ? { events: eventsWithEvent(current.events ?? [], event) } : {}) };
+        });
+        io.to(roomId).emit("room:settings", { arrangementEpoch: room.arrangementEpoch ?? 0, bpm: room.bpm, timeSignature: room.timeSignature, event });
+      } catch (error) {
+        socket.emit("room:sync-error", { message: error.statusCode === 409 ? error.message : "Could not save session timing. Reloading the saved room." });
+      }
+    });
   });
 
   socket.on("disconnect", async () => {

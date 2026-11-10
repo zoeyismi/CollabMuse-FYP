@@ -3,6 +3,8 @@ node_modules/
 
 # Next.js build output
 .next/
+.next-*/
+.next-password-check/
 out/
 
 # Logs and local environment
@@ -37,6 +39,9 @@ site-preview/
 # User-uploaded room audio
 data/uploads/
 data/auth.json
+data/*.json.bak
+data/*.json.*.tmp
+data-backups/
 
 # Local design and brainstorming caches
 .superpowers/

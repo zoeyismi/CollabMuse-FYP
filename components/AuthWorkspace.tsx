@@ -3,22 +3,21 @@
 import Link from "next/link";
 import { FormEvent, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { LockKeyhole, Mail, UserRound } from "lucide-react";
+import { Eye, EyeOff, LockKeyhole, Mail, UserRound } from "lucide-react";
 import { ArrowRight, AudioWaveform } from "@/components/Icons";
+import { safeReturnPath } from "@/lib/safe-return-path";
 
 export function AuthWorkspace() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const initialMode = searchParams.get("mode") === "login" ? "login" : "register";
-  const requestedReturnTo = searchParams.get("returnTo") ?? "";
-  const returnTo = requestedReturnTo.startsWith("/") && !requestedReturnTo.startsWith("//")
-    ? requestedReturnTo
-    : "/dashboard";
+  const returnTo = safeReturnPath(searchParams.get("returnTo"));
   const isInvitation = returnTo.includes("invite=");
   const [mode, setMode] = useState<"login" | "register">(initialMode);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [status, setStatus] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -59,28 +58,28 @@ export function AuthWorkspace() {
         </Link>
       </div>
 
-      <section className="mx-auto flex min-h-[calc(100vh-92px)] max-w-xl items-center px-2 py-16">
-        <div className="w-full rounded-xl border border-[#111820]/10 bg-white p-9 shadow-[0_18px_55px_rgba(24,35,44,0.08)] sm:p-12">
-          <div className="flex border-b border-[#111820]/12">
+      <section className="auth-layout">
+        <div className="auth-card">
+          <div className="auth-tabs">
             {(["register", "login"] as const).map((item) => (
               <button
                 key={item}
                 type="button"
-                onClick={() => { setMode(item); setStatus(""); }}
-                className={`flex-1 border-b-2 px-4 py-3 text-sm transition ${mode === item ? "border-[#111820] font-medium text-[#111820]" : "border-transparent text-[#111820]/52 hover:text-[#111820]"}`}
+                onClick={() => { setMode(item); setStatus(""); setShowPassword(false); }}
+                className={`auth-tab ${mode === item ? "auth-tab-active" : ""}`}
               >
                 {item === "register" ? "Create account" : "Log in"}
               </button>
             ))}
           </div>
-          <h1 className="mt-10 text-center text-3xl font-medium text-[#111820]">{title}</h1>
-          <p className="mt-3 text-center text-sm leading-6 text-[#111820]/55">
+          <h1 className="auth-title">{title}</h1>
+          <p className="auth-description">
             {isInvitation
               ? "Sign in to accept the room invitation. You will return to the shared workspace automatically."
               : mode === "login" ? "Continue to your saved rooms and live sessions." : "Start with a private account. Invite collaborators room by room."}
           </p>
 
-          <form className="mx-auto mt-9 max-w-lg space-y-4" onSubmit={submit}>
+          <form className="auth-form" onSubmit={submit}>
             {mode === "register" ? (
               <label className="auth-field"><span className="auth-label">Name</span>
                 <UserRound className="h-4 w-4" />
@@ -91,10 +90,13 @@ export function AuthWorkspace() {
               <Mail className="h-4 w-4" />
               <input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="Email address" type="email" autoComplete="email" required />
             </label>
-            <label className="auth-field"><span className="auth-label">Password</span>
+            <div className="auth-field auth-password-field"><label className="auth-label" htmlFor="auth-password">Password</label>
               <LockKeyhole className="h-4 w-4" />
-              <input value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Password (8+ characters)" type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} required minLength={8} />
-            </label>
+              <input id="auth-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Password (8+ characters)" type={showPassword ? "text" : "password"} autoComplete={mode === "login" ? "current-password" : "new-password"} required minLength={8} />
+              <button type="button" onClick={() => setShowPassword((visible) => !visible)} aria-label={showPassword ? "Hide password" : "Show password"} aria-pressed={showPassword} title={showPassword ? "Hide password" : "Show password"} className="grid h-8 w-8 place-items-center rounded text-[#66727b] hover:bg-[#eef1f3] hover:text-[#111820] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#315f86]">
+                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
             {status ? <p className="text-sm text-[#9d403b]" role="alert">{status}</p> : null}
             <button
               type="submit"
@@ -105,7 +107,7 @@ export function AuthWorkspace() {
               {!isSubmitting ? <ArrowRight className="h-4 w-4" /> : null}
             </button>
           </form>
-          <p className="mt-5 text-center text-xs leading-5 text-[#111820]/42">
+          <p className="auth-notice">
             Prototype accounts are stored locally for evaluation. Do not reuse a personal password.
           </p>
         </div>

@@ -1,30 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
-  content: [
-    "./lib/utils.ts",
-    "./lib/mock-data.ts",
-    "./components/FeatureCard.tsx",
-    "./components/GlassButton.tsx",
-    "./components/CollaboratorAvatars.tsx",
-    "./components/ChatPanel.tsx",
-    "./components/DashboardProjectCarousel.tsx",
-    "./components/DemoRoomWorkspace.tsx",
-    "./components/EventActivity.tsx",
-    "./components/HomepageProductReveal.tsx",
-    "./components/Icons.tsx",
-    "./components/SphericalCarousel.tsx",
-    "./app/page.tsx",
-    "./components/Timeline.tsx",
-    "./components/WaveformEditor.tsx",
-    "./app/layout.tsx",
-    "./components/ControlPanel.tsx",
-    "./components/TrackList.tsx",
-    "./components/RoomCard.tsx",
-    "./components/GlassCard.tsx",
-    "./components/Navbar.tsx",
-    "./app/dashboard/page.tsx",
-    "./app/room/demo/page.tsx"
-],
+  content: ["./app/**/*.{js,ts,jsx,tsx,mdx}", "./components/**/*.{js,ts,jsx,tsx,mdx}", "./lib/**/*.{js,ts,jsx,tsx,mdx}"],
   theme: {
     extend: {
       colors: {

@@ -2,11 +2,12 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { Pencil, Plus, Trash2 } from "@/components/Icons";
-import type { Track } from "@/lib/mock-data";
+import type { TimelineRegion, Track } from "@/lib/mock-data";
 
 type TrackListProps = {
   readOnly?: boolean;
   tracks: Track[];
+  regions: TimelineRegion[];
   onAddTrack: () => void;
   onRenameTrack: (trackId: string, name: string) => void;
   onToggleMute: (trackId: string) => void;
@@ -18,6 +19,7 @@ type TrackListProps = {
 export function TrackList({
   readOnly = false,
   tracks,
+  regions,
   onAddTrack,
   onRenameTrack,
   onToggleMute,
@@ -46,7 +48,7 @@ export function TrackList({
   };
 
   return (
-    <aside className="flex min-h-0 flex-col border-r border-[#18202a]/10 bg-[#f5f3ee] text-[#172033]">
+    <aside className="flex min-h-0 max-h-[420px] flex-col border-r border-[#18202a]/10 bg-[#f5f3ee] text-[#172033] md:max-h-none">
       <div className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-[#18202a]/10 px-4">
         <div>
           <p className="text-[11px] font-semibold text-[#172033]/48">Tracks</p>
@@ -93,10 +95,10 @@ export function TrackList({
                 ) : (
                   <p className="truncate text-[13px] font-medium text-[#172033]">{track.name}</p>
                 )}
-                <p className="text-[10px] text-[#172033]/38">{track.clips} clips</p>
+                <p className="text-[10px] text-[#172033]/38">{regions.filter((region, regionIndex) => (region.lane ?? Math.min(regionIndex, tracks.length - 1)) === index && region.clipId).length} clips</p>
                 {track.source === "ai" ? (
                   <span className="mt-1 inline-flex rounded-full bg-[#235fba]/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#235fba]">
-                    AI melody
+                    Generated
                   </span>
                 ) : null}
               </div>

@@ -5,12 +5,16 @@ import { GlassButton } from "@/components/GlassButton";
 import { Navbar } from "@/components/Navbar";
 import { SphericalCarousel } from "@/components/SphericalCarousel";
 import { useLanguage } from "@/lib/i18n";
+import Image from "next/image";
 
 const workflowImages = [
   "/workflow/create-room.jpg",
   "/workflow/build-track.jpg",
   "/workflow/stay-synced.jpg",
 ];
+
+const heroRings = ["Room", "Clip", "Note", "Sync", "Mix", "Version"];
+const heroWaveform = [22, 38, 30, 54, 42, 68, 36, 48, 28, 62, 44, 72, 34, 56, 40, 64, 30, 48, 24];
 
 export default function Home() {
   const { t } = useLanguage();
@@ -23,7 +27,7 @@ export default function Home() {
   return (
     <main className="relative overflow-hidden">
       <Navbar overlay />
-      <section className="home-hero relative -mt-[72px] flex min-h-screen items-center overflow-hidden px-5 pb-16 pt-[136px] text-center sm:pb-20 sm:pt-[152px]">
+      <section className="home-hero relative -mt-[72px] flex min-h-screen overflow-hidden px-5 pb-0 pt-[136px] text-center sm:pt-[152px]">
         <div className="home-flow-scene pointer-events-none absolute inset-0" aria-hidden="true">
           <span className="home-flow-shape home-flow-shape-a" />
           <span className="home-flow-shape home-flow-shape-b" />
@@ -37,7 +41,7 @@ export default function Home() {
             <Sparkles className="h-4 w-4 text-[#315f86]" />
             {t("hero.eyebrow")}
           </div>
-          <h1 className="fade-up mt-7 whitespace-nowrap text-[52px] font-light leading-none tracking-normal text-[#111820] sm:text-[82px] lg:text-[112px]">
+          <h1 className="fade-up mt-7 text-[40px] font-light leading-tight tracking-normal text-[#111820] sm:text-[82px] lg:text-[112px]">
             {t("hero.title")}
           </h1>
           <p className="fade-up mx-auto mt-8 max-w-2xl text-base leading-8 text-[rgba(23,50,75,0.68)] sm:text-xl">
@@ -50,6 +54,37 @@ export default function Home() {
             <GlassButton href="/room/demo" icon={RadioTower} variant="secondary" className="!border-[rgba(23,50,75,0.28)] !bg-white/60 !text-[#17324b] hover:!bg-white/85">
               {t("hero.demo")}
             </GlassButton>
+          </div>
+
+          <div className="home-hero-artwork fade-up mt-12">
+            <Image
+              src="/home/hero-hands.jpg"
+              alt="Two collaborators joining hands"
+              fill
+              priority
+              sizes="(max-width: 640px) 78vw, 420px"
+              className="object-cover"
+            />
+            <div className="home-hero-artwork-shade" />
+            <span className="home-hero-artwork-label">Shared idea · Room 01</span>
+            <div className="home-hero-waveform" aria-hidden="true">
+              {heroWaveform.map((height, index) => (
+                <i key={`${height}-${index}`} style={{ height: `${height}%` }} />
+              ))}
+            </div>
+          </div>
+
+          <div id="hero-motion" className="home-orbit-stage" aria-hidden="true">
+            <div className="home-orbit-rotor">
+              {heroRings.map((label, index) => (
+                <span className={`home-orbit-slot home-orbit-slot-${index + 1}`} key={label}>
+                  <span className={`home-motion-ring home-motion-ring-${index + 1}`}>
+                      <i />
+                      <b>{label}</b>
+                  </span>
+                </span>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -70,15 +105,24 @@ export default function Home() {
             {t("workflow.description")}
           </p>
         </div>
-        <div className="mt-12 grid gap-5 md:grid-cols-[0.9fr_1.25fr_0.9fr] md:items-start">
+        <div className="workflow-gallery mt-12">
           {workflow.map((item, index) => (
-            <article key={item.step} className={`workflow-photo group relative overflow-hidden rounded-[28px] border border-white/24 shadow-[0_28px_70px_rgba(13,42,69,0.26)] ${index === 1 ? "h-[520px]" : "h-[400px] md:mt-16"}`}>
-              <img src={workflowImages[index]} alt={`${item.title} workflow`} className="h-full w-full object-cover transition duration-700 group-hover:scale-[1.035]" />
+            <article
+              key={item.step}
+              className={`workflow-photo workflow-photo-${index + 1} group relative overflow-hidden`}
+            >
+              <Image
+                src={workflowImages[index]}
+                alt={`${item.title} workflow`}
+                fill
+                sizes="(max-width: 640px) 100vw, (max-width: 900px) 50vw, 42vw"
+                className="object-cover transition duration-700 group-hover:scale-[1.035]"
+              />
               <div className="workflow-photo-grade absolute inset-0" />
-              <div className="absolute inset-x-0 bottom-0 p-6 text-white sm:p-7">
-                <span className="text-xs font-semibold tracking-[0.22em] text-white/68">{item.step}</span>
-                <h3 className="mt-2 text-2xl font-medium">{item.title}</h3>
-                <p className="mt-2 max-w-sm text-sm leading-6 text-white/72">{item.description}</p>
+              <div className="workflow-photo-copy absolute inset-x-0 bottom-0 p-6 text-white sm:p-7">
+                <span className="text-xs font-semibold tracking-[0.22em] text-white/74">{item.step}</span>
+                <h3 className="mt-2 text-2xl font-medium leading-tight">{item.title}</h3>
+                <p className="mt-2 max-w-sm text-sm leading-6 text-white/78">{item.description}</p>
               </div>
             </article>
           ))}
@@ -97,7 +141,7 @@ export default function Home() {
             {t("demo.description")}
           </p>
           <div className="mt-8 flex justify-center">
-            <GlassButton href="/dashboard" icon={ArrowRight}>
+            <GlassButton href="/room/demo" icon={ArrowRight}>
               {t("demo.launch")}
             </GlassButton>
           </div>

@@ -119,6 +119,7 @@ export type AudioClip = {
     mood: string;
     key: string;
     instrumental: boolean;
+    bpm?: number;
     songId?: string;
   };
 };
@@ -148,9 +149,19 @@ export type RoomNote = {
   message: string;
   time: string;
   position?: number;
+  regionId?: string;
+  regionOffset?: number;
+  replies?: RoomNoteReply[];
   resolved?: boolean;
   resolvedBy?: string;
   resolvedAt?: string;
+};
+
+export type RoomNoteReply = {
+  id: string;
+  author: string;
+  message: string;
+  time: string;
 };
 
 export type TimelineRegion = {

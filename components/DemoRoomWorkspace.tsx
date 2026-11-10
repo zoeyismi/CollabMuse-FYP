@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
-import { ArrowLeft, Circle, Redo2, Share2, Undo2 } from "@/components/Icons";
+import { ArrowLeft, AudioWaveform, Circle, Download, Redo2, Share2, Undo2, UsersRound } from "@/components/Icons";
 import { ClipLibrary } from "@/components/ClipLibrary";
 import { CollaboratorAvatars } from "@/components/CollaboratorAvatars";
 import { ControlPanel, type TransportCommand } from "@/components/ControlPanel";
@@ -13,17 +13,34 @@ import { MusicAgentPanel } from "@/components/MusicAgentPanel";
 import { TrackList } from "@/components/TrackList";
 import { WorkstationInspector } from "@/components/WorkstationInspector";
 import { WorkstationTimeline } from "@/components/WorkstationTimeline";
+import { availableRegionDuration, canEditRegionTiming } from "@/lib/clip-source";
+import { isLoopbackHostname } from "@/lib/local-share";
+import { requestVersionChange } from "@/lib/version-request";
+import { audioFileSizeError } from "@/lib/audio-limits.mjs";
+import { getAudioDuration } from "@/lib/audio-metadata";
+import { waveformPeaksFromSamples } from "@/lib/waveform-peaks";
+import { findFreeTimelineStart } from "@/lib/timeline-placement";
+import { useLanguage } from "@/lib/i18n";
+import { hasPendingVersionChanges } from "@/lib/version-readiness";
+import { isCurrentUpload } from "@/lib/upload-result";
+import { shouldApplyRestore } from "@/lib/restore-order";
+import { hasPlayableAudio } from "@/lib/playable-audio";
+import { roomConnectionLabel, roomConnectionMessage, type RoomConnectionState } from "@/lib/room-connection-status";
 import {
   initialRoomEvents,
   initialRoomNotes,
   initialTimelineRegions,
   initialTracks,
 } from "@/lib/mock-data";
-import type { AudioClip, MusicComposition, RoomEvent, RoomNote, RoomVersion, TimelineRegion, Track } from "@/lib/mock-data";
+import type { AudioClip, MusicComposition, RoomEvent, RoomNote, RoomNoteReply, RoomVersion, TimelineRegion, Track } from "@/lib/mock-data";
+import { hasPendingEdit, settlePendingEdit } from "@/lib/pending-room-edits.mjs";
+
+type ClipDeletion = { clipId: string; clipTrackId?: string; arrangementEpoch: number; recoveryVersion: RoomVersion; affectedNotePositions: Array<{ id: string; position: number }>; event: RoomEvent };
 
 type RoomSocket = Socket<
   {
     "room:snapshot": (payload: {
+      arrangementEpoch: number;
       roomId: string;
       title: string;
       events: RoomEvent[];
@@ -31,6 +48,7 @@ type RoomSocket = Socket<
       uploadedFileName: string;
       waveformPeaks: number[] | null;
       audioAvailable: boolean;
+      referenceMuted: boolean;
       timelineRegions: TimelineRegion[];
       tracks: Track[];
       composition: MusicComposition | null;
@@ -41,21 +59,30 @@ type RoomSocket = Socket<
     }) => void;
     "room:event": (event: RoomEvent) => void;
     "room:upload": (payload: {
+      arrangementEpoch: number;
       fileName: string;
       waveformPeaks?: number[] | null;
       audioAvailable?: boolean;
+      versions?: RoomVersion[];
       event?: RoomEvent;
     }) => void;
     "room:note": (payload: { note: RoomNote; event?: RoomEvent }) => void;
+    "room:note-reply": (payload: { noteId: string; reply: RoomNoteReply }) => void;
+    "room:note-state": (payload: { noteId: string; state: { resolved?: boolean; resolvedBy?: string; resolvedAt?: string } | null; event?: RoomEvent }) => void;
     "room:notes": (payload: { notes: RoomNote[]; event?: RoomEvent }) => void;
-    "room:timeline": (payload: { timelineRegions: TimelineRegion[]; event?: RoomEvent }) => void;
-    "room:tracks": (payload: { tracks: Track[]; event?: RoomEvent }) => void;
-    "room:composition": (payload: { composition: MusicComposition; event?: RoomEvent }) => void;
-    "room:clips": (payload: { audioClips: AudioClip[]; event?: RoomEvent }) => void;
+    "room:timeline": (payload: { arrangementEpoch: number; timelineRegions: TimelineRegion[]; notes?: RoomNote[]; event?: RoomEvent }) => void;
+    "room:tracks": (payload: { arrangementEpoch: number; tracks: Track[]; event?: RoomEvent }) => void;
+    "room:reference-mute": (payload: { muted: boolean; arrangementEpoch: number }) => void;
+    "room:restored": (payload: { reason?: "track-deleted"; arrangementEpoch: number; tracks: Track[]; timelineRegions: TimelineRegion[]; notes?: RoomNote[]; composition: MusicComposition | null; audioClips: AudioClip[]; uploadedFileName: string; audioAvailable: boolean; referenceMuted: boolean; waveformPeaks: number[] | null; versions: RoomVersion[]; bpm: number; timeSignature: string; event?: RoomEvent }) => void;
+    "room:composition": (payload: { arrangementEpoch: number; composition: MusicComposition; event?: RoomEvent }) => void;
+    "room:clips": (payload: { arrangementEpoch?: number; audioClips: AudioClip[]; event?: RoomEvent }) => void;
+    "room:clip-deleted": (payload: ClipDeletion) => void;
     "room:presence": (payload: { roomId: string; count: number }) => void;
     "room:transport": (payload: TransportCommand & { userName: string }) => void;
-    "room:settings": (payload: { bpm: number; timeSignature: string; event?: RoomEvent }) => void;
+    "room:settings": (payload: { arrangementEpoch: number; bpm: number; timeSignature: string; event?: RoomEvent }) => void;
     "room:access-denied": (payload: { roomId: string }) => void;
+    "room:access-changed": (payload: { roomId: string; role: "editor" | "viewer" }) => void;
+    "room:sync-error": (payload: { message: string }) => void;
     "room:deleted": (payload: { roomId: string }) => void;
   },
   {
@@ -68,22 +95,30 @@ type RoomSocket = Socket<
       audioAvailable: boolean;
       event: RoomEvent;
     }) => void;
-    "room:note": (payload: { roomId: string; note: RoomNote; event: RoomEvent }) => void;
+    "room:note": (payload: { roomId: string; note: RoomNote; event: RoomEvent }, acknowledge: (result: { ok: boolean; error?: string; note?: RoomNote }) => void) => void;
+    "room:note-reply": (payload: { roomId: string; noteId: string; reply: RoomNoteReply }, acknowledge: (result: { ok: boolean; error?: string }) => void) => void;
+    "room:note-state": (payload: { roomId: string; noteId: string; event: RoomEvent }) => void;
     "room:notes": (payload: { roomId: string; notes: RoomNote[]; event: RoomEvent }) => void;
     "room:timeline": (payload: {
       roomId: string;
+      arrangementEpoch: number;
       timelineRegions: TimelineRegion[];
+      previousRegions?: TimelineRegion[];
+      split?: { originalId: string; newId: string };
+      merge?: { originalId: string; newId: string };
       event: RoomEvent;
     }) => void;
-    "room:tracks": (payload: { roomId: string; tracks: Track[]; event: RoomEvent }) => void;
+    "room:tracks": (payload: { roomId: string; arrangementEpoch: number; tracks: Track[]; previousTracks?: Track[]; event: RoomEvent }) => void;
+    "room:reference-mute": (payload: { roomId: string; arrangementEpoch: number; muted: boolean }) => void;
     "room:composition": (payload: {
       roomId: string;
+      arrangementEpoch: number;
       composition: MusicComposition;
       event: RoomEvent;
     }) => void;
     "room:clips": (payload: { roomId: string; audioClips: AudioClip[]; event?: RoomEvent }) => void;
     "room:transport": (payload: { roomId: string; command: TransportCommand; userName: string }) => void;
-    "room:settings": (payload: { roomId: string; bpm: number; timeSignature: string; event: RoomEvent }) => void;
+    "room:settings": (payload: { roomId: string; arrangementEpoch: number; bpm: number; timeSignature: string; event: RoomEvent }) => void;
   }
 >;
 
@@ -107,8 +142,11 @@ function createNote(message: string, author: string, position: number): RoomNote
   };
 }
 
-function clampRegionStart(left: number, width: number) {
-  return Math.min(96 - width, Math.max(4, left));
+function createLocalId(prefix: string) {
+  const unique = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${unique}`;
 }
 
 async function extractWaveformPeaks(file: File): Promise<number[] | null> {
@@ -122,43 +160,11 @@ async function extractWaveformPeaks(file: File): Promise<number[] | null> {
 
   try {
     const audioBuffer = await audioContext.decodeAudioData(await file.arrayBuffer());
-    const channelData = audioBuffer.getChannelData(0);
-    const bucketCount = 96;
-    const bucketSize = Math.max(1, Math.floor(channelData.length / bucketCount));
-
-    const rmsPeaks = Array.from({ length: bucketCount }, (_, bucketIndex) => {
-      const start = bucketIndex * bucketSize;
-      const end = bucketIndex === bucketCount - 1 ? channelData.length : Math.min(channelData.length, start + bucketSize);
-      let sum = 0;
-
-      for (let index = start; index < end; index += 1) {
-        sum += channelData[index] * channelData[index];
-      }
-
-      return Math.sqrt(sum / Math.max(1, end - start));
-    });
-
-    const strongestPeak = Math.max(...rmsPeaks, 0.001);
-    return rmsPeaks.map((peak) => Math.round(18 + (peak / strongestPeak) * 44));
+    return waveformPeaksFromSamples(audioBuffer.getChannelData(0));
   } catch {
     return null;
   } finally {
     void audioContext.close();
-  }
-}
-
-async function getAudioDuration(file: File) {
-  const url = URL.createObjectURL(file);
-  try {
-    return await new Promise<number>((resolve) => {
-      const audio = new Audio();
-      audio.preload = "metadata";
-      audio.onloadedmetadata = () => resolve(Number.isFinite(audio.duration) ? audio.duration : 0);
-      audio.onerror = () => resolve(0);
-      audio.src = url;
-    });
-  } finally {
-    URL.revokeObjectURL(url);
   }
 }
 
@@ -167,7 +173,7 @@ async function analyzeAudioFile(file: File) {
     window.AudioContext ??
     (window as Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
   if (!AudioContextConstructor) {
-    return { duration: await getAudioDuration(file), bpm: 0, loudnessDb: 0, energy: "medium" as const, dynamics: "steady" as const };
+    return { duration: await getAudioDuration(file), bpm: 0, loudnessDb: 0, energy: "medium" as const, dynamics: "steady" as const, waveformPeaks: null };
   }
 
   const context = new AudioContextConstructor();
@@ -194,7 +200,7 @@ async function analyzeAudioFile(file: File) {
     }
     let bestBpm = 0;
     let bestScore = -Infinity;
-    for (let bpm = 60; bpm <= 180; bpm += 1) {
+    for (let bpm = 60; rms >= 0.003 && buffer.duration >= 3 && bpm <= 180; bpm += 1) {
       const lag = Math.max(1, Math.round((60 / bpm) / bucketSeconds));
       let score = 0;
       for (let index = lag; index < envelope.length; index += 1) score += envelope[index] * envelope[index - lag];
@@ -205,9 +211,9 @@ async function analyzeAudioFile(file: File) {
     }
     const energy = rms < 0.045 ? "low" as const : rms > 0.13 ? "high" as const : "medium" as const;
     const dynamics = peak / Math.max(rms, 0.00001) > 4.5 ? "varied" as const : "steady" as const;
-    return { duration: buffer.duration, bpm: bestBpm, loudnessDb, energy, dynamics };
+    return { duration: buffer.duration, bpm: bestBpm, loudnessDb, energy, dynamics, waveformPeaks: waveformPeaksFromSamples(samples) };
   } catch {
-    return { duration: await getAudioDuration(file), bpm: 0, loudnessDb: 0, energy: "medium" as const, dynamics: "steady" as const };
+    return { duration: await getAudioDuration(file), bpm: 0, loudnessDb: 0, energy: "medium" as const, dynamics: "steady" as const, waveformPeaks: null };
   } finally {
     void context.close();
   }
@@ -296,22 +302,29 @@ type RoomMember = {
   role: "owner" | "editor" | "viewer";
 };
 
+type TimelineHistoryEntry = { regions: TimelineRegion[]; split?: { originalId: string; newId: string } };
+
 export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always session" }: DemoRoomWorkspaceProps) {
+  const { t, language } = useLanguage();
+  const arrangementEpochRef = useRef(0);
   const [roomTitle, setRoomTitle] = useState(initialTitle);
-  const [events, setEvents] = useState<RoomEvent[]>(initialRoomEvents);
-  const [notes, setNotes] = useState<RoomNote[]>(initialRoomNotes);
-  const [uploadedFileName, setUploadedFileName] = useState<string>("always-reference.wav");
+  const [events, setEvents] = useState<RoomEvent[]>(roomId === "demo" ? initialRoomEvents : []);
+  const [notes, setNotes] = useState<RoomNote[]>(roomId === "demo" ? initialRoomNotes : []);
+  const [uploadedFileName, setUploadedFileName] = useState<string>(roomId === "demo" ? "always-reference.wav" : "");
   const [uploadedAudioUrl, setUploadedAudioUrl] = useState<string | null>(null);
+  const [referenceMuted, setReferenceMuted] = useState(false);
   const [waveformPeaks, setWaveformPeaks] = useState<number[] | null>(null);
-  const [timelineRegions, setTimelineRegions] = useState<TimelineRegion[]>(initialTimelineRegions);
-  const [timelineUndoStack, setTimelineUndoStack] = useState<TimelineRegion[][]>([]);
-  const [timelineRedoStack, setTimelineRedoStack] = useState<TimelineRegion[][]>([]);
-  const [tracks, setTracks] = useState<Track[]>(initialTracks);
+  const [timelineRegions, setTimelineRegions] = useState<TimelineRegion[]>(roomId === "demo" ? initialTimelineRegions : []);
+  const [timelineUndoStack, setTimelineUndoStack] = useState<TimelineHistoryEntry[]>([]);
+  const [timelineRedoStack, setTimelineRedoStack] = useState<TimelineHistoryEntry[]>([]);
+  const [tracks, setTracks] = useState<Track[]>(roomId === "demo" ? initialTracks : []);
   const [composition, setComposition] = useState<MusicComposition | null>(null);
   const [audioClips, setAudioClips] = useState<AudioClip[]>([]);
   const [versions, setVersions] = useState<RoomVersion[]>([]);
+  const [versionOperationPending, setVersionOperationPending] = useState(false);
   const [isUploadingClip, setIsUploadingClip] = useState(false);
   const [copilotSourceClip, setCopilotSourceClip] = useState<AudioClip | null>(null);
+  const [openCopilotRequest, setOpenCopilotRequest] = useState(0);
   const [playheadPosition, setPlayheadPosition] = useState(52);
   const [seekRequest, setSeekRequest] = useState<{ id: number; position: number } | null>(null);
   const [transportCommand, setTransportCommand] = useState<TransportCommand | null>(null);
@@ -319,22 +332,66 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   const [timeSignature, setTimeSignature] = useState("4/4");
   const [snapMode, setSnapMode] = useState<"Bar" | "Beat" | "Off">("Bar");
   const [isClipLibraryOpen, setIsClipLibraryOpen] = useState(false);
+  const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
+  const [isRoomLoading, setIsRoomLoading] = useState(roomId !== "demo");
+  const [roomError, setRoomError] = useState("");
+  const [legacyOpenRoom, setLegacyOpenRoom] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [hasUnsavedNoteDraft, setHasUnsavedNoteDraft] = useState(false);
+  const [hasRecordingAtRisk, setHasRecordingAtRisk] = useState(false);
+  const [editSaveState, setEditSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [connectionState, setConnectionState] = useState<RoomConnectionState>("connecting");
   const [syncStatus, setSyncStatus] = useState("Connecting Socket.io");
   const [shareStatus, setShareStatus] = useState("Share room");
   const [onlineCount, setOnlineCount] = useState(1);
   const [currentUserName, setCurrentUserName] = useState("Guest creator");
   const [members, setMembers] = useState<RoomMember[]>([]);
   const [currentRole, setCurrentRole] = useState<RoomMember["role"]>(roomId === "demo" ? "owner" : "viewer");
+  const [isAccessLoading, setIsAccessLoading] = useState(roomId !== "demo");
   const [inviteRole, setInviteRole] = useState<"editor" | "viewer">("editor");
   const [showMembers, setShowMembers] = useState(false);
   const socketRef = useRef<RoomSocket | null>(null);
+  const pendingTimelineEventsRef = useRef(new Set<string>());
+  const pendingEditsRef = useRef(new Set<string>());
+  const processedClipDeletionsRef = useRef(new Set<string>());
+  const pendingNoteRef = useRef<{ key: string; note: RoomNote; event: RoomEvent } | null>(null);
+  const pendingReplyRef = useRef<{ key: string; reply: RoomNoteReply } | null>(null);
+  const replyInFlightRef = useRef(false);
+  const noteInFlightRef = useRef(false);
+  const referenceUploadInFlightRef = useRef(false);
+  const referenceRefreshRef = useRef(0);
+  const clipUploadInFlightRef = useRef(false);
+  const versionOperationInFlightRef = useRef(false);
   const audioEndpoint = `/api/rooms/${encodeURIComponent(roomId)}/audio`;
-  const canEdit = currentRole !== "viewer";
+  const canEdit = !isAccessLoading && currentRole !== "viewer" && connectionState === "online";
+
+  useEffect(() => {
+    if (!versionOperationPending) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [versionOperationPending]);
 
   const rejectViewerEdit = () => {
     if (canEdit) return false;
-    setSyncStatus("View-only access: editing is locked");
+    setSyncStatus(connectionState !== "online" ? roomConnectionMessage(connectionState, language) : "View-only access: editing is locked");
     return true;
+  };
+
+  const persistRoomChanges = async (...operations: Array<{ url: string; init: RequestInit }>) => {
+    try {
+      const responses = await Promise.all(operations.map(({ url, init }) => fetch(url, init)));
+      const failed = responses.find((response) => !response.ok);
+      if (failed) {
+        const data = await failed.json().catch(() => ({})) as { error?: string };
+        socketRef.current?.emit("room:join", roomId);
+        throw new Error(data.error || "Room update failed. Reload the room and try again.");
+      }
+      setSyncStatus("Changes saved to this room");
+    } catch (error) {
+      setSyncStatus("Save failed. Your latest changes may not be available to collaborators.");
+      setSaveError(error instanceof Error ? error.message : "Some changes could not be saved. Check your connection and try again.");
+    }
   };
 
   const prependEvent = useCallback((event: RoomEvent) => {
@@ -345,24 +402,47 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     );
   }, []);
 
+  const applyClipDeletion = useCallback((data: ClipDeletion) => {
+    if (data.arrangementEpoch !== arrangementEpochRef.current || processedClipDeletionsRef.current.has(data.event.id)) return;
+    processedClipDeletionsRef.current.add(data.event.id);
+    setAudioClips((current) => current.filter((clip) => clip.id !== data.clipId));
+    setTimelineRegions((current) => current.filter((region) => region.clipId !== data.clipId));
+    setTracks((current) => current.map((track) => track.id === data.clipTrackId ? { ...track, clips: Math.max(0, track.clips - 1) } : track));
+    setVersions((current) => current.some((version) => version.id === data.recoveryVersion.id) ? current : [data.recoveryVersion, ...current]);
+    setNotes((current) => current.map((note) => {
+      const affected = data.affectedNotePositions.find((item) => item.id === note.id);
+      return affected ? { ...note, position: affected.position } : note;
+    }));
+    setTimelineUndoStack([]);
+    setTimelineRedoStack([]);
+    setSelectedRegionId(null);
+    prependEvent(data.event);
+    setSyncStatus("Audio clip removed; a recovery version was saved");
+  }, [prependEvent]);
+
   const prependNote = useCallback((note: RoomNote) => {
     setNotes((current) =>
       current.some((item) => item.id === note.id)
         ? current
-        : [note, ...current].slice(0, 8),
+        : [note, ...current],
     );
   }, []);
 
   const refreshMembers = useCallback(async () => {
-    const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/members`);
-    if (!response.ok) return;
-    const data = await response.json() as { owner?: RoomMember; members?: RoomMember[]; currentRole?: RoomMember["role"] };
-    setMembers([...(data.owner?.userId ? [data.owner] : []), ...(data.members ?? [])]);
-    setCurrentRole(data.currentRole ?? (roomId === "demo" ? "owner" : "viewer"));
+    try {
+      const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/members`);
+      if (!response.ok) return;
+      const data = await response.json() as { owner?: RoomMember; members?: RoomMember[]; currentRole?: RoomMember["role"] };
+      setMembers([...(data.owner?.userId ? [data.owner] : []), ...(data.members ?? [])]);
+      setCurrentRole(data.currentRole ?? (roomId === "demo" ? "owner" : "viewer"));
+    } finally {
+      setIsAccessLoading(false);
+    }
   }, [roomId]);
 
   useEffect(() => {
     let active = true;
+    let snapshotReceived = false;
 
     async function loadRoom() {
       try {
@@ -388,10 +468,15 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
             window.history.replaceState({}, "", window.location.pathname);
           }
         }
+        await refreshMembers();
         const roomResponse = await fetch(`/api/rooms/${encodeURIComponent(roomId)}`);
         if (roomResponse.ok) {
-          const roomData = (await roomResponse.json()) as { room?: { title?: string } };
+          const roomData = (await roomResponse.json()) as { room?: { title?: string; ownerId?: string | null } };
           if (active && roomData.room?.title) setRoomTitle(roomData.room.title);
+          if (active) setLegacyOpenRoom(roomId !== "demo" && !roomData.room?.ownerId);
+        } else if (roomResponse.status === 404) {
+          if (active) { setRoomError("This room could not be found. Check the link or return to your workspace."); setIsRoomLoading(false); }
+          return;
         } else if (roomResponse.status === 401 || roomResponse.status === 403) {
           setSyncStatus(roomResponse.status === 401 ? "Log in to access this private room" : "This room requires an invitation");
           if (roomResponse.status === 401) {
@@ -402,7 +487,10 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
         }
 
         const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/events`);
-        if (!response.ok) return;
+        if (!response.ok) {
+          if (active) setIsRoomLoading(false);
+          return;
+        }
 
         const data = (await response.json()) as {
           events: RoomEvent[];
@@ -410,6 +498,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
           uploadedFileName: string;
           waveformPeaks?: number[] | null;
           audioAvailable?: boolean;
+          referenceMuted?: boolean;
           timelineRegions?: TimelineRegion[];
           tracks?: Track[];
           composition?: MusicComposition | null;
@@ -419,22 +508,28 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
           timeSignature?: string;
         };
         if (!active) return;
+        if (snapshotReceived) { setIsRoomLoading(false); return; }
 
         setEvents(data.events);
-        setNotes(data.notes ?? initialRoomNotes);
+        setNotes(data.notes ?? (roomId === "demo" ? initialRoomNotes : []));
         setUploadedFileName(data.uploadedFileName);
         setWaveformPeaks(data.waveformPeaks ?? null);
         setUploadedAudioUrl(data.audioAvailable ? audioEndpoint : null);
-        setTimelineRegions(data.timelineRegions ?? initialTimelineRegions);
-        setTracks(data.tracks ?? initialTracks);
+        setReferenceMuted(Boolean(data.referenceMuted));
+        setTimelineRegions(data.timelineRegions ?? (roomId === "demo" ? initialTimelineRegions : []));
+        setTracks(data.tracks ?? (roomId === "demo" ? initialTracks : []));
         setComposition(data.composition ?? null);
         setAudioClips(data.audioClips ?? []);
         setVersions(data.versions ?? []);
         setBpm(data.bpm ?? 96);
         setTimeSignature(data.timeSignature ?? "4/4");
-        void refreshMembers();
+        setIsRoomLoading(false);
       } catch {
-        if (active) setSyncStatus("Backend offline fallback");
+        if (active) {
+          setIsAccessLoading(false);
+          setIsRoomLoading(false);
+          setSyncStatus("Backend offline fallback");
+        }
       }
     }
 
@@ -445,30 +540,53 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     socketRef.current = socket;
 
     socket.on("connect", () => {
+      setConnectionState("connecting");
       setSyncStatus("Socket.io connected");
       socket.emit("room:join", roomId);
     });
 
     socket.on("disconnect", () => {
+      if (pendingEditsRef.current.size) {
+        setEditSaveState("error");
+        setSaveError("Connection lost while saving room changes. Check the room after reconnecting and reapply any missing edits.");
+        pendingEditsRef.current.clear();
+      }
+      pendingTimelineEventsRef.current.clear();
+      setConnectionState("offline");
       setSyncStatus("Socket.io reconnecting");
     });
 
     socket.on("room:snapshot", (payload) => {
       if (payload.roomId !== roomId) return;
+      const snapshotEpoch = payload.arrangementEpoch ?? 0;
+      if (snapshotReceived && snapshotEpoch < arrangementEpochRef.current) return;
+      const epochChanged = snapshotEpoch !== arrangementEpochRef.current;
+      if (epochChanged && pendingEditsRef.current.size) {
+        pendingEditsRef.current.clear();
+        pendingTimelineEventsRef.current.clear();
+        setEditSaveState("error");
+        setSaveError("The room changed while edits were still saving. Check the restored room and reapply any missing edits.");
+      }
+      arrangementEpochRef.current = snapshotEpoch;
+      snapshotReceived = true;
+      setConnectionState("online");
       setRoomTitle(payload.title || initialTitle);
       setEvents(payload.events);
-      setNotes(payload.notes ?? initialRoomNotes);
+      setNotes(payload.notes ?? (roomId === "demo" ? initialRoomNotes : []));
       setUploadedFileName(payload.uploadedFileName);
       setWaveformPeaks(payload.waveformPeaks ?? null);
-      setUploadedAudioUrl(payload.audioAvailable ? audioEndpoint : null);
-      setTimelineRegions(payload.timelineRegions ?? initialTimelineRegions);
-      setTracks(payload.tracks ?? initialTracks);
-      setComposition(payload.composition ?? null);
+      setUploadedAudioUrl(payload.audioAvailable ? `${audioEndpoint}?snapshot=${++referenceRefreshRef.current}` : null);
+      setReferenceMuted(Boolean(payload.referenceMuted));
+      if (!hasPendingEdit(pendingEditsRef.current, "timeline")) setTimelineRegions(payload.timelineRegions ?? (roomId === "demo" ? initialTimelineRegions : []));
+      if (!hasPendingEdit(pendingEditsRef.current, "track")) setTracks(payload.tracks ?? (roomId === "demo" ? initialTracks : []));
+      if (!hasPendingEdit(pendingEditsRef.current, "composition")) setComposition(payload.composition ?? null);
       setAudioClips(payload.audioClips ?? []);
       setVersions(payload.versions ?? []);
-      setBpm(payload.bpm ?? 96);
-      setTimeSignature(payload.timeSignature ?? "4/4");
-      setSyncStatus("Room state loaded");
+      if (!hasPendingEdit(pendingEditsRef.current, "settings")) {
+        setBpm(payload.bpm ?? 96);
+        setTimeSignature(payload.timeSignature ?? "4/4");
+      }
+      setSyncStatus(pendingEditsRef.current.size ? "Saving room changes" : "Room state loaded");
     });
 
     socket.on("room:event", (event) => {
@@ -476,10 +594,13 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
       setSyncStatus("Synced from another window");
     });
 
-    socket.on("room:upload", ({ fileName, waveformPeaks: syncedWaveformPeaks, audioAvailable, event }) => {
+    socket.on("room:upload", ({ arrangementEpoch, fileName, waveformPeaks: syncedWaveformPeaks, audioAvailable, versions: syncedVersions, event }) => {
+      if (arrangementEpoch !== arrangementEpochRef.current) return;
       setUploadedFileName(fileName);
       setWaveformPeaks(syncedWaveformPeaks ?? null);
       if (audioAvailable) setUploadedAudioUrl(`${audioEndpoint}?v=${event?.id ?? Date.now()}`);
+      else setUploadedAudioUrl(null);
+      if (syncedVersions) setVersions(syncedVersions);
       if (event) prependEvent(event);
       setSyncStatus("Upload synced from another window");
     });
@@ -490,37 +611,106 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
       setSyncStatus("Room note synced from another window");
     });
 
+    socket.on("room:note-reply", ({ noteId, reply }) => {
+      setNotes((current) => current.map((note) => note.id === noteId && !(note.replies ?? []).some((item) => item.id === reply.id)
+        ? { ...note, replies: [...(note.replies ?? []), reply] }
+        : note));
+      setSyncStatus("Reply saved and synced");
+    });
+
+    socket.on("room:note-state", ({ noteId, state, event }) => {
+      setNotes((current) => state === null ? current.filter((note) => note.id !== noteId) : current.map((note) => note.id === noteId ? { ...note, ...state } : note));
+      if (event) prependEvent(event);
+      setSyncStatus("Note updated and synced");
+    });
+
     socket.on("room:notes", ({ notes: syncedNotes, event }) => {
       setNotes(syncedNotes);
       if (event) prependEvent(event);
       setSyncStatus("Note status synced from another window");
     });
 
-    socket.on("room:timeline", ({ timelineRegions: syncedTimelineRegions, event }) => {
-      setTimelineRegions(syncedTimelineRegions);
+    socket.on("room:timeline", ({ arrangementEpoch, timelineRegions: syncedTimelineRegions, notes: syncedNotes, event }) => {
+      if (arrangementEpoch !== arrangementEpochRef.current) return;
+      const isOwnEdit = Boolean(event && pendingTimelineEventsRef.current.delete(event.id));
+      const { stillSaving: timelineStillSaving } = settlePendingEdit(pendingEditsRef.current, "timeline", event?.id);
+      if (!timelineStillSaving) setTimelineRegions(syncedTimelineRegions);
+      if (syncedNotes) setNotes((current) => current.map((note) => {
+        const updated = syncedNotes.find((item) => item.id === note.id);
+        return updated ? { ...note, regionId: updated.regionId, regionOffset: updated.regionOffset, position: updated.position } : note;
+      }));
+      if (!isOwnEdit) {
+        setTimelineUndoStack([]);
+        setTimelineRedoStack([]);
+      }
+      if (event) prependEvent(event);
+      if (isOwnEdit) setEditSaveState(pendingEditsRef.current.size ? "saving" : "saved");
+      setSyncStatus(timelineStillSaving ? "Saving timeline edit" : "Timeline changes saved and synced");
+    });
+
+    socket.on("room:tracks", ({ arrangementEpoch, tracks: syncedTracks, event }) => {
+      if (arrangementEpoch !== arrangementEpochRef.current) return;
+      const { own: isOwnEdit, stillSaving: tracksStillSaving } = settlePendingEdit(pendingEditsRef.current, "track", event?.id);
+      if (!tracksStillSaving) setTracks(syncedTracks);
+      if (event) prependEvent(event);
+      if (isOwnEdit) setEditSaveState(pendingEditsRef.current.size ? "saving" : "saved");
+      setSyncStatus(tracksStillSaving ? "Saving track edit" : "Track changes saved and synced");
+    });
+
+    socket.on("room:reference-mute", ({ muted, arrangementEpoch }) => {
+      if (arrangementEpoch !== arrangementEpochRef.current) return;
+      setReferenceMuted(muted);
+      setSyncStatus("Reference audio setting saved and synced");
+    });
+
+    socket.on("room:restored", (data) => {
+      if (!shouldApplyRestore(arrangementEpochRef.current, data.arrangementEpoch, snapshotReceived)) return;
+      arrangementEpochRef.current = data.arrangementEpoch ?? 0;
+      snapshotReceived = true;
+      if (pendingEditsRef.current.size) {
+        pendingEditsRef.current.clear();
+        pendingTimelineEventsRef.current.clear();
+        setEditSaveState("error");
+        setSaveError(data.reason === "track-deleted" ? "A track was removed while edits were still saving. Check the room and reapply any missing edits." : "A version was restored while edits were still saving. Check the restored room and reapply any missing edits.");
+      }
+      setTracks(data.tracks);
+      setTimelineRegions(data.timelineRegions);
+      if (data.notes) setNotes((current) => current.map((note) => {
+        const saved = data.notes?.find((item) => item.id === note.id);
+        return saved ? { ...note, position: saved.position } : note;
+      }));
+      setComposition(data.composition);
+      setAudioClips(data.audioClips);
+      setUploadedFileName(data.uploadedFileName);
+      setWaveformPeaks(data.waveformPeaks);
+      setUploadedAudioUrl(data.audioAvailable ? `${audioEndpoint}?v=${Date.now()}` : null);
+      setReferenceMuted(Boolean(data.referenceMuted));
+      setVersions(data.versions);
+      setBpm(data.bpm);
+      setTimeSignature(data.timeSignature);
       setTimelineUndoStack([]);
       setTimelineRedoStack([]);
-      if (event) prependEvent(event);
-      setSyncStatus("Timeline edit synced from another window");
+      if (data.event) prependEvent(data.event);
+      setSyncStatus(data.reason === "track-deleted" ? "Track removed; a recovery version was saved" : "Project version restored and synced");
     });
 
-    socket.on("room:tracks", ({ tracks: syncedTracks, event }) => {
-      setTracks(syncedTracks);
+    socket.on("room:composition", ({ arrangementEpoch, composition: syncedComposition, event }) => {
+      if (arrangementEpoch !== arrangementEpochRef.current) return;
+      const { own, stillSaving } = settlePendingEdit(pendingEditsRef.current, "composition", event?.id);
+      if (!stillSaving) setComposition(syncedComposition);
       if (event) prependEvent(event);
-      setSyncStatus("Track change synced from another window");
+      if (own) setEditSaveState(pendingEditsRef.current.size ? "saving" : "saved");
+      setSyncStatus(stillSaving ? "Saving melody edit" : "Melody changes saved and synced");
     });
 
-    socket.on("room:composition", ({ composition: syncedComposition, event }) => {
-      setComposition(syncedComposition);
-      if (event) prependEvent(event);
-      setSyncStatus("AI melody synced from another window");
-    });
-
-    socket.on("room:clips", ({ audioClips: syncedAudioClips, event }) => {
+    socket.on("room:clips", ({ arrangementEpoch, audioClips: syncedAudioClips, event }) => {
+      if (arrangementEpoch !== undefined && arrangementEpoch !== arrangementEpochRef.current) return;
       setAudioClips(syncedAudioClips);
       if (event) prependEvent(event);
       setSyncStatus("Audio clip library synced from another window");
     });
+
+    socket.on("room:clip-deleted", applyClipDeletion);
 
     socket.on("room:presence", ({ roomId: presenceRoomId, count }) => {
       if (presenceRoomId === roomId) setOnlineCount(Math.max(1, count));
@@ -531,15 +721,31 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
       setSyncStatus(`${userName} ${command.action === "play" ? "started playback" : command.action === "pause" ? "paused playback" : "moved the playhead"}`);
     });
 
-    socket.on("room:settings", ({ bpm: syncedBpm, timeSignature: syncedTimeSignature, event }) => {
-      setBpm(syncedBpm);
-      setTimeSignature(syncedTimeSignature);
+    socket.on("room:settings", ({ arrangementEpoch, bpm: syncedBpm, timeSignature: syncedTimeSignature, event }) => {
+      if (arrangementEpoch !== arrangementEpochRef.current) return;
+      const { own, stillSaving } = settlePendingEdit(pendingEditsRef.current, "settings", event?.id);
+      if (!stillSaving) { setBpm(syncedBpm); setTimeSignature(syncedTimeSignature); }
       if (event) prependEvent(event);
-      setSyncStatus(`Session tempo synced at ${syncedBpm} BPM · ${syncedTimeSignature}`);
+      if (own) setEditSaveState(pendingEditsRef.current.size ? "saving" : "saved");
+      setSyncStatus(stillSaving ? "Saving session timing" : `Session tempo synced at ${syncedBpm} BPM · ${syncedTimeSignature}`);
     });
 
     socket.on("room:access-denied", ({ roomId: deniedRoomId }) => {
-      if (deniedRoomId === roomId) setSyncStatus("Room access denied");
+      if (deniedRoomId === roomId) { setConnectionState("denied"); setSyncStatus("Room access denied"); }
+    });
+
+    socket.on("room:access-changed", ({ roomId: changedRoomId, role }) => {
+      if (changedRoomId !== roomId) return;
+      setCurrentRole(role);
+      setSyncStatus(role === "viewer" ? "Your access is now view-only" : "You can now edit this room");
+    });
+
+    socket.on("room:sync-error", ({ message }) => {
+      if (pendingEditsRef.current.size) { pendingEditsRef.current.clear(); setEditSaveState("error"); }
+      pendingTimelineEventsRef.current.clear();
+      setSyncStatus(message);
+      setSaveError(message);
+      socket.emit("room:join", roomId);
     });
 
     socket.on("room:deleted", ({ roomId: deletedRoomId }) => {
@@ -554,7 +760,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
       socket.disconnect();
       if (socketRef.current === socket) socketRef.current = null;
     };
-  }, [audioEndpoint, initialTitle, prependEvent, prependNote, refreshMembers, roomId]);
+  }, [applyClipDeletion, audioEndpoint, initialTitle, prependEvent, prependNote, refreshMembers, roomId]);
 
   useEffect(() => {
     fetch("/api/auth/me")
@@ -569,54 +775,64 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     nextTimelineRegions: TimelineRegion[],
     event: RoomEvent,
     recordHistory = true,
+    split?: { originalId: string; newId: string },
+    merge?: { originalId: string; newId: string },
   ) => {
     if (rejectViewerEdit()) return;
     if (recordHistory) {
-      setTimelineUndoStack((current) => [...current, timelineRegions].slice(-20));
+      setTimelineUndoStack((current) => [...current, { regions: timelineRegions, split }].slice(-20));
       setTimelineRedoStack([]);
     }
     setTimelineRegions(nextTimelineRegions);
     prependEvent(event);
 
     if (socketRef.current?.connected) {
+      pendingTimelineEventsRef.current.add(event.id);
+      pendingEditsRef.current.add(`timeline:${event.id}`);
+      setEditSaveState("saving");
       socketRef.current.emit("room:timeline", {
         roomId,
+        arrangementEpoch: arrangementEpochRef.current,
         timelineRegions: nextTimelineRegions,
+        previousRegions: timelineRegions,
+        split,
+        merge,
         event,
       });
-      setSyncStatus("Timeline edit broadcast through Socket.io");
+      setSyncStatus("Saving timeline edit");
       return;
     }
 
-    fetch(`/api/rooms/${encodeURIComponent(roomId)}/timeline`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ timelineRegions: nextTimelineRegions, event }),
+    void persistRoomChanges({
+      url: `/api/rooms/${encodeURIComponent(roomId)}/timeline`,
+      init: { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ timelineRegions: nextTimelineRegions, previousRegions: timelineRegions, split, merge, arrangementEpoch: arrangementEpochRef.current, event }) },
     });
-    setSyncStatus("Timeline edit saved through backend");
   };
 
   const handleUndoTimeline = () => {
-    const previousRegions = timelineUndoStack[timelineUndoStack.length - 1];
-    if (!previousRegions) return;
+    const previous = timelineUndoStack[timelineUndoStack.length - 1];
+    if (!previous) return;
     setTimelineUndoStack((current) => current.slice(0, -1));
-    setTimelineRedoStack((current) => [...current, timelineRegions].slice(-20));
+    setTimelineRedoStack((current) => [...current, { regions: timelineRegions, split: previous.split }].slice(-20));
     publishTimelineChange(
-      previousRegions,
+      previous.regions,
       createEvent("sync", "Timeline edit undone", `${currentUserName} restored the previous timeline layout.`),
       false,
+      undefined,
+      previous.split,
     );
   };
 
   const handleRedoTimeline = () => {
-    const nextRegions = timelineRedoStack[timelineRedoStack.length - 1];
-    if (!nextRegions) return;
+    const next = timelineRedoStack[timelineRedoStack.length - 1];
+    if (!next) return;
     setTimelineRedoStack((current) => current.slice(0, -1));
-    setTimelineUndoStack((current) => [...current, timelineRegions].slice(-20));
+    setTimelineUndoStack((current) => [...current, { regions: timelineRegions, split: next.split }].slice(-20));
     publishTimelineChange(
-      nextRegions,
+      next.regions,
       createEvent("sync", "Timeline edit redone", `${currentUserName} reapplied a timeline layout.`),
       false,
+      next.split,
     );
   };
 
@@ -626,24 +842,24 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     prependEvent(event);
 
     if (socketRef.current?.connected) {
-      socketRef.current.emit("room:tracks", { roomId, tracks: nextTracks, event });
-      setSyncStatus("Track change broadcast through Socket.io");
+      pendingEditsRef.current.add(`track:${event.id}`);
+      setEditSaveState("saving");
+      socketRef.current.emit("room:tracks", { roomId, arrangementEpoch: arrangementEpochRef.current, tracks: nextTracks, previousTracks: tracks, event });
+      setSyncStatus("Saving track edit");
       return;
     }
 
-    fetch(`/api/rooms/${encodeURIComponent(roomId)}/tracks`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tracks: nextTracks, event }),
+    void persistRoomChanges({
+      url: `/api/rooms/${encodeURIComponent(roomId)}/tracks`,
+      init: { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tracks: nextTracks, previousTracks: tracks, arrangementEpoch: arrangementEpochRef.current, event }) },
     });
-    setSyncStatus("Track change saved through backend");
   };
 
   const handleAddTrack = () => {
     if (tracks.length >= 12) return;
     const colors = ["#b71912", "#235fba", "#efd84c", "#58e081"];
     const track: Track = {
-      id: `track-${Date.now().toString(36)}`,
+      id: createLocalId("track"),
       name: `New track ${tracks.length + 1}`,
       color: colors[tracks.length % colors.length],
       muted: false,
@@ -685,6 +901,12 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     publishTracksChange(tracks.map((track) => track.id === trackId ? { ...track, solo: nextSolo } : track), event);
   };
 
+  const handleReferenceMute = (muted: boolean) => {
+    if (rejectViewerEdit() || !socketRef.current?.connected) return;
+    socketRef.current.emit("room:reference-mute", { roomId, arrangementEpoch: arrangementEpochRef.current, muted });
+    setSyncStatus("Saving reference audio setting");
+  };
+
   const handleSetTrackVolume = (trackId: string, volume: number) => {
     const currentTrack = tracks.find((track) => track.id === trackId);
     if (!currentTrack) return;
@@ -694,18 +916,26 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     publishTracksChange(tracks.map((track) => track.id === trackId ? { ...track, volume: normalizedVolume } : track), event);
   };
 
-  const handleDeleteTrack = (trackId: string) => {
+  const handleDeleteTrack = async (trackId: string) => {
+    if (rejectViewerEdit()) return;
     if (tracks.length <= 1) return;
     const deletedLane = tracks.findIndex((track) => track.id === trackId);
     const currentTrack = tracks.find((track) => track.id === trackId);
     if (!currentTrack || deletedLane < 0) return;
     const removedRegions = timelineRegions.filter((region, index) => (region.lane ?? Math.min(index, tracks.length - 1)) === deletedLane);
-    const nextRegions = timelineRegions
-      .filter((region, index) => (region.lane ?? Math.min(index, tracks.length - 1)) !== deletedLane)
-      .map((region) => ({ ...region, lane: (region.lane ?? 0) > deletedLane ? (region.lane ?? 0) - 1 : region.lane }));
-    const event = createEvent("rename", "Track removed", `${currentTrack.name} and ${removedRegions.length} timeline clip${removedRegions.length === 1 ? "" : "s"} were removed. Source audio remains in the clip library.`);
-    publishTracksChange(tracks.filter((track) => track.id !== trackId), event);
-    if (nextRegions.length !== timelineRegions.length || deletedLane < tracks.length - 1) publishTimelineChange(nextRegions, event);
+    if (pendingEditsRef.current.size) { setSaveError("Wait for current edits to finish saving before deleting a track."); return; }
+    if (!window.confirm(`Remove "${currentTrack.name}" and its ${removedRegions.length} timeline ${removedRegions.length === 1 ? "clip" : "clips"}? Source audio stays in the library and a recovery version will be saved.`)) return;
+    try {
+      const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/tracks/${encodeURIComponent(trackId)}`, {
+        method: "DELETE", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ arrangementEpoch: arrangementEpochRef.current, previousTracks: tracks, previousRegions: timelineRegions }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not remove the track.");
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Could not remove the track.");
+      socketRef.current?.emit("room:join", roomId);
+    }
   };
 
   const handleCompositionGenerated = (nextComposition: MusicComposition) => {
@@ -719,21 +949,22 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     prependEvent(event);
 
     if (socketRef.current?.connected) {
+      pendingEditsRef.current.add(`composition:${event.id}`);
+      setEditSaveState("saving");
       socketRef.current.emit("room:composition", {
         roomId,
+        arrangementEpoch: arrangementEpochRef.current,
         composition: nextComposition,
         event,
       });
-      setSyncStatus("AI melody broadcast through Socket.io");
+      setSyncStatus("Saving melody");
       return;
     }
 
-    fetch(`/api/rooms/${encodeURIComponent(roomId)}/events`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ event }),
-    });
-    setSyncStatus("AI melody saved through backend");
+    void persistRoomChanges(
+      { url: `/api/rooms/${encodeURIComponent(roomId)}`, init: { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ composition: nextComposition, arrangementEpoch: arrangementEpochRef.current }) } },
+      { url: `/api/rooms/${encodeURIComponent(roomId)}/events`, init: { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event }) } },
+    );
   };
 
   const handleCompositionEdited = (nextComposition: MusicComposition) => {
@@ -747,22 +978,17 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     prependEvent(event);
 
     if (socketRef.current?.connected) {
-      socketRef.current.emit("room:composition", { roomId, composition: nextComposition, event });
-      setSyncStatus("Piano roll edit synced through Socket.io");
+      pendingEditsRef.current.add(`composition:${event.id}`);
+      setEditSaveState("saving");
+      socketRef.current.emit("room:composition", { roomId, arrangementEpoch: arrangementEpochRef.current, composition: nextComposition, event });
+      setSyncStatus("Saving melody edit");
       return;
     }
 
-    fetch(`/api/rooms/${encodeURIComponent(roomId)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ composition: nextComposition }),
-    });
-    fetch(`/api/rooms/${encodeURIComponent(roomId)}/events`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ event }),
-    });
-    setSyncStatus("Piano roll edit saved through backend");
+    void persistRoomChanges(
+      { url: `/api/rooms/${encodeURIComponent(roomId)}`, init: { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ composition: nextComposition, arrangementEpoch: arrangementEpochRef.current }) } },
+      { url: `/api/rooms/${encodeURIComponent(roomId)}/events`, init: { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event }) } },
+    );
   };
 
   const handleAddCompositionToRoom = async (nextComposition: MusicComposition) => {
@@ -775,7 +1001,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
 
     setSyncStatus("Rendering AI melody to audio");
     const track: Track = {
-      id: `ai-track-${Date.now().toString(36)}`,
+      id: createLocalId("ai-track"),
       name: nextComposition.title,
       color: "#235fba",
       muted: false,
@@ -820,7 +1046,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
         "AI melody rendered to audio",
         `${currentUserName} added ${nextComposition.title} as a playable ${nextComposition.notes.length}-note WAV track.`,
       );
-      const nextClips = [...audioClips, data.clip].slice(-24);
+      const nextClips = [...audioClips, data.clip];
       publishTracksChange([...tracks, track], event);
       publishTimelineChange([...timelineRegions, region], event);
       broadcastClipLibrary(nextClips, event);
@@ -831,110 +1057,77 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   };
 
   const handleGeneratedMusicReady = (clip: AudioClip) => {
-    const nextClips = [...audioClips.filter((item) => item.id !== clip.id), clip].slice(-24);
+    const nextClips = [...audioClips.filter((item) => item.id !== clip.id), clip];
     const event = createEvent(
       "remix",
-      "AI music generated",
+      clip.generation?.provider === "elevenlabs" ? "AI music generated" : "Arrangement generated",
       `${currentUserName} generated ${clip.duration} seconds of real audio with ${clip.generation?.provider === "elevenlabs" ? "ElevenLabs Music" : "CollabMuse Composer"}.`,
     );
     broadcastClipLibrary(nextClips, event);
-    setSyncStatus("AI-generated audio is ready to preview");
+    setSyncStatus(clip.generation?.provider === "elevenlabs" ? "AI-generated audio is ready to preview" : "Rule-based arrangement is ready to preview");
   };
 
-  const handleAddGeneratedMusicToRoom = (clip: AudioClip) => {
-    if (rejectViewerEdit()) return;
-    if (tracks.some((track) => track.id === clip.trackId)) return;
+  const handleAddGeneratedMusicToRoom = async (clip: AudioClip) => {
+    if (rejectViewerEdit()) return false;
+    if (tracks.some((track) => track.id === clip.trackId)) return false;
     if (tracks.length >= 12) {
       setSyncStatus("Track limit reached");
-      return;
+      return false;
     }
 
-    const track: Track = {
-      id: clip.trackId,
-      name: clip.name.replace(/\.(mp3|wav)$/i, "").replace(/-/g, " "),
-      color: "#235fba",
-      muted: false,
-      solo: false,
-      volume: 0.8,
-      clips: 1,
-      source: "ai",
-    };
-    const region: TimelineRegion = {
-      id: `region-${clip.id}`,
-      clipId: clip.id,
-      lane: tracks.length,
-      label: clip.name,
-      actionLabel: "Move clip",
-      left: 4,
-      width: Math.max(10, Math.min(46, Math.round(clip.duration / 2))),
-      color: track.color,
-      sourceOffset: 0,
-      sourceDuration: clip.duration,
-    };
-    const event = createEvent(
-      "remix",
-      "AI music added to workstation",
-      `${currentUserName} added ${clip.name} as a playable audio track.`,
-    );
-    publishTracksChange([...tracks, track], event);
-    publishTimelineChange([...timelineRegions, region], event);
-    setSyncStatus("AI-generated music added as a real audio track");
+    try {
+      const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/tracks/from-clip`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clipId: clip.id, arrangementEpoch: arrangementEpochRef.current }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not add generated audio.");
+      setSyncStatus(clip.generation?.provider === "elevenlabs" ? "AI-generated music added as an audio track" : "Rule-based arrangement added as an audio track");
+      return true;
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Could not add generated audio.");
+      socketRef.current?.emit("room:join", roomId);
+      return false;
+    }
   };
 
   const handleUpload = async (file: File) => {
-    if (rejectViewerEdit()) return;
-    setSyncStatus("Analyzing uploaded waveform");
-    const extractedWaveformPeaks = await extractWaveformPeaks(file);
-    const event = createEvent("upload", "Audio uploaded", `Added ${file.name}`);
-    let audioAvailable = false;
-
+    if (rejectViewerEdit() || referenceUploadInFlightRef.current) return;
+    const sizeError = audioFileSizeError(file.size);
+    if (sizeError) { setSyncStatus("Audio upload rejected"); setSaveError(sizeError); return; }
+    referenceUploadInFlightRef.current = true;
+    const uploadEpoch = arrangementEpochRef.current;
     try {
+      setSyncStatus("Analyzing uploaded waveform");
+      const extractedWaveformPeaks = await extractWaveformPeaks(file);
+      if (!extractedWaveformPeaks && !(await getAudioDuration(file))) {
+        throw new Error("This audio file could not be read. The previous reference audio was kept.");
+      }
+      const event = createEvent("upload", "Audio uploaded", `Added ${file.name}`);
+      if (!isCurrentUpload(uploadEpoch, arrangementEpochRef.current)) throw new Error("The room changed while preparing the upload. Check the restored room and try again.");
       const uploadResponse = await fetch(`${audioEndpoint}?name=${encodeURIComponent(file.name)}`, {
         method: "POST",
-        headers: { "Content-Type": file.type || "application/octet-stream" },
+        headers: { "Content-Type": file.type || "application/octet-stream", "X-Waveform-Peaks": JSON.stringify(extractedWaveformPeaks ?? []), "X-Arrangement-Epoch": String(uploadEpoch) },
         body: file,
       });
-      if (!uploadResponse.ok) throw new Error("Audio upload failed");
-      audioAvailable = true;
-      setUploadedAudioUrl(`${audioEndpoint}?v=${event.id}`);
-    } catch {
-      setUploadedAudioUrl((currentUrl) => {
-        if (currentUrl?.startsWith("blob:")) URL.revokeObjectURL(currentUrl);
-        return URL.createObjectURL(file);
-      });
+      if (!uploadResponse.ok) {
+        const data = await uploadResponse.json().catch(() => ({})) as { error?: string };
+        throw new Error(data.error || "Audio upload failed");
+      }
+      if (!isCurrentUpload(uploadEpoch, arrangementEpochRef.current)) throw new Error("The room changed while uploading. Check the restored room before trying again.");
+      prependEvent(event);
+      if (socketRef.current?.connected) {
+        socketRef.current.emit("room:event", { roomId, event });
+        setSyncStatus("Audio uploaded and saved");
+      } else {
+        setSyncStatus("Audio uploaded. Reconnecting to refresh the room.");
+      }
+    } catch (error) {
+      setSyncStatus("Audio upload failed");
+      setSaveError(error instanceof Error ? error.message : "Audio upload failed. The previous audio was kept; check your connection and try again.");
+    } finally {
+      referenceUploadInFlightRef.current = false;
     }
-
-    setUploadedFileName(file.name);
-    setWaveformPeaks(extractedWaveformPeaks);
-    prependEvent(event);
-
-    if (socketRef.current?.connected) {
-      socketRef.current.emit("room:upload", {
-        roomId,
-        fileName: file.name,
-        waveformPeaks: extractedWaveformPeaks,
-        audioAvailable,
-        event,
-      });
-      setSyncStatus("Upload broadcast through Socket.io");
-      return;
-    }
-
-    fetch(`/api/rooms/${encodeURIComponent(roomId)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        uploadedFileName: file.name,
-        waveformPeaks: extractedWaveformPeaks,
-        audioAvailable,
-      }),
-    });
-    fetch(`/api/rooms/${encodeURIComponent(roomId)}/events`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ event }),
-    });
-    setSyncStatus("Upload saved through backend");
   };
 
   const broadcastClipLibrary = (nextClips: AudioClip[], event: RoomEvent) => {
@@ -946,12 +1139,26 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   };
 
   const handleClipUpload = async (file: File, trackId: string) => {
-    if (rejectViewerEdit()) return;
-    if (isUploadingClip) return;
+    if (rejectViewerEdit()) return false;
+    const sizeError = audioFileSizeError(file.size);
+    if (sizeError) { setSyncStatus("Audio upload rejected"); setSaveError(sizeError); return false; }
+    if (clipUploadInFlightRef.current) {
+      setSaveError("Another audio upload is already in progress. Please wait and try again.");
+      return false;
+    }
+    if (!tracks.some((track) => track.id === trackId)) {
+      setSaveError("The target track no longer exists. Download the recording to keep it.");
+      return false;
+    }
+    clipUploadInFlightRef.current = true;
+    const uploadEpoch = arrangementEpochRef.current;
     setIsUploadingClip(true);
     setSyncStatus(`Uploading ${file.name}`);
     try {
-      const [analysis, clipWaveformPeaks] = await Promise.all([analyzeAudioFile(file), extractWaveformPeaks(file)]);
+      const analysis = await analyzeAudioFile(file);
+      const clipWaveformPeaks = analysis.waveformPeaks;
+      if (!Number.isFinite(analysis.duration) || analysis.duration <= 0) throw new Error("The audio duration could not be read. Choose a playable audio file and try again.");
+      if (!isCurrentUpload(uploadEpoch, arrangementEpochRef.current)) throw new Error("The room changed while preparing the upload. Check the restored room and try again.");
       const response = await fetch(
         `/api/rooms/${encodeURIComponent(roomId)}/clips?name=${encodeURIComponent(file.name)}&trackId=${encodeURIComponent(trackId)}&duration=${analysis.duration}`,
         {
@@ -963,21 +1170,25 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
             "X-Audio-Energy": analysis.energy,
             "X-Audio-Dynamics": analysis.dynamics,
             "X-Waveform-Peaks": JSON.stringify(clipWaveformPeaks ?? []),
+            "X-Arrangement-Epoch": String(uploadEpoch),
           },
           body: file,
         },
       );
-      if (!response.ok) throw new Error("Clip upload failed");
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(error.error || "Clip upload failed");
+      }
       const data = (await response.json()) as { clip: AudioClip };
-      const nextClips = [...audioClips, data.clip].slice(-24);
+      if (!isCurrentUpload(uploadEpoch, arrangementEpochRef.current)) throw new Error("The room changed while uploading. Check the restored room before trying again.");
+      const nextClips = [...audioClips, data.clip];
       const event = createEvent("upload", "Track clip uploaded", `${currentUserName} added ${file.name} to the room clip library.`);
       const nextTracks = tracks.map((track) => track.id === trackId ? { ...track, clips: track.clips + 1, source: "audio" as const } : track);
       const lane = Math.max(0, tracks.findIndex((track) => track.id === trackId));
       const laneRegions = timelineRegions.filter((region, index) => (region.lane ?? Math.min(index, 3)) === lane);
-      const lastEnd = laneRegions.reduce((end, region) => Math.max(end, region.left + region.width), 2);
-      const width = Math.max(8, Math.min(28, Math.round(Math.max(analysis.duration, 8) / 2)));
-      const left = lastEnd + width <= 98 ? Math.min(90, lastEnd + 2) : 4;
-      const timelineRegion: TimelineRegion = {
+      const width = Math.max(1, Math.min(100, (analysis.duration / 120) * 100));
+      const left = findFreeTimelineStart(laneRegions, width);
+      const timelineRegion: TimelineRegion | null = left === null ? null : {
         id: `region-${data.clip.id}`,
         clipId: data.clip.id,
         lane,
@@ -990,45 +1201,58 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
         sourceDuration: analysis.duration,
       };
       publishTracksChange(nextTracks, event);
-      publishTimelineChange([...timelineRegions, timelineRegion], event);
+      if (timelineRegion) publishTimelineChange([...timelineRegions, timelineRegion], event);
       broadcastClipLibrary(nextClips, event);
-      setSyncStatus("Audio clip uploaded and synced");
-    } catch {
+      setSyncStatus(timelineRegion ? "Audio clip uploaded and synced" : "Audio saved to the clip library. No space on this track; choose another track or move clips first.");
+      if (!timelineRegion) setSaveError("The audio was saved in the clip library, but this track has no space. Select another track or move clips before adding it to the timeline.");
+      return true;
+    } catch (error) {
       setSyncStatus("Could not upload audio clip");
+      setSaveError(error instanceof Error ? error.message : "Audio clip upload failed. Check your connection and try again.");
+      return false;
     } finally {
+      clipUploadInFlightRef.current = false;
       setIsUploadingClip(false);
     }
   };
 
   const handleClipDelete = async (clip: AudioClip) => {
     if (rejectViewerEdit()) return;
+    const regionCount = timelineRegions.filter((region) => region.clipId === clip.id).length;
+    if (!window.confirm(`Remove "${clip.name}" and its ${regionCount} timeline ${regionCount === 1 ? "clip" : "clips"}? A recovery version will be saved.`)) return;
     try {
       const response = await fetch(
         `/api/rooms/${encodeURIComponent(roomId)}/clips/${encodeURIComponent(clip.id)}`,
-        { method: "DELETE" },
+        { method: "DELETE", headers: { "X-Arrangement-Epoch": String(arrangementEpochRef.current) } },
       );
-      if (!response.ok) throw new Error("Clip deletion failed");
-      const data = (await response.json()) as { audioClips: AudioClip[] };
-      const event = createEvent("upload", "Track clip removed", `${currentUserName} removed ${clip.name}.`);
-      const nextTracks = tracks.map((track) => track.id === clip.trackId ? { ...track, clips: Math.max(0, track.clips - 1) } : track);
-      const nextTimelineRegions = timelineRegions.filter((region) => region.clipId !== clip.id);
-      publishTracksChange(nextTracks, event);
-      if (nextTimelineRegions.length !== timelineRegions.length) publishTimelineChange(nextTimelineRegions, event);
-      broadcastClipLibrary(data.audioClips, event);
-      setSyncStatus("Audio clip removed and synced");
-    } catch {
+      const data = await response.json();
+      if (!response.ok) {
+        if (response.status === 409) socketRef.current?.emit("room:join", roomId);
+        throw new Error(data.error || "Clip deletion failed");
+      }
+      applyClipDeletion(data as ClipDeletion);
+    } catch (error) {
       setSyncStatus("Could not remove audio clip");
+      setSaveError(error instanceof Error ? error.message : "Could not remove audio clip.");
     }
   };
 
-  const handleAddClipToTimeline = (clip: AudioClip) => {
-    const lane = Math.max(0, tracks.findIndex((track) => track.id === clip.trackId));
+  const handleAddClipToTimeline = (clip: AudioClip, targetTrackId: string) => {
+    if (rejectViewerEdit()) return;
+    const lane = tracks.findIndex((track) => track.id === targetTrackId);
+    if (lane < 0) {
+      setSyncStatus("Choose an available track before adding this clip");
+      return;
+    }
     const laneRegions = timelineRegions.filter((region, index) => (region.lane ?? Math.min(index, tracks.length - 1)) === lane);
-    const width = Math.max(8, Math.min(28, Math.round(Math.max(clip.duration, 8) / 2)));
-    const occupiedEnd = laneRegions.reduce((end, region) => Math.max(end, region.left + region.width), 2);
-    const left = occupiedEnd + width <= 98 ? occupiedEnd + 2 : 4;
+    const width = Math.max(1, Math.min(100, (clip.duration / 120) * 100));
+    const left = findFreeTimelineStart(laneRegions, width);
+    if (left === null) {
+      setSyncStatus("No space on this track. Move clips or choose another track.");
+      return;
+    }
     const region: TimelineRegion = {
-      id: `region-${clip.id}-${Date.now().toString(36)}`,
+      id: createLocalId(`region-${clip.id}`),
       clipId: clip.id,
       lane,
       label: clip.name,
@@ -1044,26 +1268,64 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     setSyncStatus(`${clip.name} added to timeline`);
   };
 
-  const handleSendNote = (message: string, position: number) => {
-    if (rejectViewerEdit()) return;
-    const note = createNote(message, currentUserName, position);
-    const event = createEvent("note", "Timestamped note added", `${currentUserName} added a note at ${Math.round(position)}% of the waveform.`);
-
-    prependNote(note);
-    prependEvent(event);
-
-    if (socketRef.current?.connected) {
-      socketRef.current.emit("room:note", { roomId, note, event });
-      setSyncStatus("Room note broadcast through Socket.io");
-      return;
+  const handleSendNote = async (message: string, position: number, regionId?: string): Promise<boolean> => {
+    if (rejectViewerEdit() || !socketRef.current?.connected || noteInFlightRef.current) return false;
+    const key = JSON.stringify([message, position, regionId ?? null]);
+    const existing = pendingNoteRef.current?.key === key ? pendingNoteRef.current : null;
+    const note = existing?.note ?? createNote(message, currentUserName, position);
+    const region = regionId ? timelineRegions.find((item) => item.id === regionId && item.clipId) : undefined;
+    if (!existing && region && region.width > 0) {
+      note.regionId = region.id;
+      note.regionOffset = Math.max(0, Math.min(1, (position - region.left) / region.width));
+      note.position = region.left + region.width * note.regionOffset;
     }
-
-    fetch(`/api/rooms/${encodeURIComponent(roomId)}/notes`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ note, event }),
+    const event = existing?.event ?? createEvent("note", "Timestamped note added", `${currentUserName} added a note at ${Math.round(position)}% of the waveform.`);
+    pendingNoteRef.current = { key, note, event };
+    const socket = socketRef.current;
+    setSyncStatus("Saving note...");
+    noteInFlightRef.current = true;
+    return new Promise((resolve) => {
+      socket.timeout(10000).emit("room:note", { roomId, note, event }, (error, result) => {
+        noteInFlightRef.current = false;
+        if (error || !result?.ok) {
+          setSaveError(result?.error ?? "The note could not be confirmed. Your text is kept; check the connection and retry.");
+          setSyncStatus("Note could not be confirmed");
+          if (socket.connected) socket.emit("room:join", roomId);
+          resolve(false);
+          return;
+        }
+        pendingNoteRef.current = null;
+        prependNote(result.note ?? note);
+        prependEvent(event);
+        setSyncStatus("Note saved and synced");
+        resolve(true);
+      });
     });
-    setSyncStatus("Room note saved through backend");
+  };
+
+  const handleReplyToNote = async (noteId: string, message: string): Promise<boolean> => {
+    if (rejectViewerEdit() || !socketRef.current?.connected || replyInFlightRef.current) return false;
+    const key = JSON.stringify([noteId, message]);
+    const reply: RoomNoteReply = pendingReplyRef.current?.key === key ? pendingReplyRef.current.reply : { id: createLocalId("reply"), author: currentUserName, message, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) };
+    pendingReplyRef.current = { key, reply };
+    replyInFlightRef.current = true;
+    const socket = socketRef.current;
+    setSyncStatus("Saving reply...");
+    return new Promise((resolve) => {
+      socket.timeout(10000).emit("room:note-reply", { roomId, noteId, reply }, (error, result) => {
+        replyInFlightRef.current = false;
+        if (error || !result?.ok) {
+          setSaveError(result?.error ?? "The reply could not be confirmed. Your text is kept; check the connection and retry.");
+          setSyncStatus("Reply could not be confirmed");
+          if (socket.connected) socket.emit("room:join", roomId);
+          resolve(false);
+        } else {
+          pendingReplyRef.current = null;
+          setSyncStatus("Reply saved and synced");
+          resolve(true);
+        }
+      });
+    });
   };
 
   const handleResolveNote = async (note: RoomNote, resolved: boolean) => {
@@ -1080,19 +1342,27 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ resolved, resolvedBy: currentUserName, event }),
       });
-      if (!response.ok) throw new Error("Note update failed");
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(data.error || "Note update could not be confirmed.");
+      }
       const data = await response.json() as { notes: RoomNote[] };
-      setNotes(data.notes);
+      const updated = data.notes.find((item) => item.id === note.id);
+      if (updated) setNotes((current) => current.map((item) => item.id === note.id ? { ...item, resolved: updated.resolved, resolvedBy: updated.resolvedBy, resolvedAt: updated.resolvedAt } : item));
       prependEvent(event);
-      if (socketRef.current?.connected) socketRef.current.emit("room:notes", { roomId, notes: data.notes, event });
+      if (socketRef.current?.connected) socketRef.current.emit("room:note-state", { roomId, noteId: note.id, event });
       setSyncStatus(resolved ? "Note resolved" : "Note reopened");
-    } catch {
-      setSyncStatus("Could not update note");
+    } catch (error) {
+      setSyncStatus("Note update could not be confirmed");
+      setSaveError(error instanceof Error ? error.message : "The note update could not be confirmed. Check the connection and try again.");
+      if (socketRef.current?.connected) socketRef.current.emit("room:join", roomId);
     }
   };
 
   const handleDeleteNote = async (note: RoomNote) => {
     if (rejectViewerEdit()) return;
+    const replyCount = note.replies?.length ?? 0;
+    if (!window.confirm(`Delete this note${replyCount ? ` and its ${replyCount} ${replyCount === 1 ? "reply" : "replies"}` : ""}? This cannot be undone unless you have a saved version.`)) return;
     const event = createEvent("note", "Note deleted", `${currentUserName} removed “${note.message.slice(0, 70)}”.`);
     setSyncStatus("Deleting note");
     try {
@@ -1101,76 +1371,91 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ event }),
       });
-      if (!response.ok) throw new Error("Note deletion failed");
-      const data = await response.json() as { notes: RoomNote[] };
-      setNotes(data.notes);
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(data.error || "Note deletion could not be confirmed.");
+      }
+      setNotes((current) => current.filter((item) => item.id !== note.id));
       prependEvent(event);
-      if (socketRef.current?.connected) socketRef.current.emit("room:notes", { roomId, notes: data.notes, event });
+      if (socketRef.current?.connected) socketRef.current.emit("room:note-state", { roomId, noteId: note.id, event });
       setSyncStatus("Note deleted");
-    } catch {
-      setSyncStatus("Could not delete note");
+    } catch (error) {
+      setSyncStatus("Note deletion could not be confirmed");
+      setSaveError(error instanceof Error ? error.message : "The note deletion could not be confirmed. Check the connection and try again.");
+      if (socketRef.current?.connected) socketRef.current.emit("room:join", roomId);
     }
   };
 
   const handleCreateVersion = async (name: string) => {
-    if (rejectViewerEdit()) return;
+    if (rejectViewerEdit()) return false;
+    if (versionOperationInFlightRef.current) {
+      setSaveError(language === "zh" ? "版本操作正在进行，请等待完成。" : "A version operation is already in progress. Please wait.");
+      return false;
+    }
+    if (hasPendingVersionChanges(pendingEditsRef.current.size, noteInFlightRef.current || replyInFlightRef.current, clipUploadInFlightRef.current || referenceUploadInFlightRef.current)) {
+      setSaveError("Wait for your current edits, note or audio upload to finish saving before creating a version.");
+      return false;
+    }
     const event = createEvent("sync", "Project version saved", `${currentUserName} saved “${name}”.`);
+    versionOperationInFlightRef.current = true;
+    setVersionOperationPending(true);
     setSyncStatus("Saving project version");
     try {
-      const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/versions`, {
+      const { response, data } = await requestVersionChange<{ versions: RoomVersion[]; error?: string }>(`/api/rooms/${encodeURIComponent(roomId)}/versions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, event }),
       });
-      if (!response.ok) throw new Error("Version save failed");
-      const data = (await response.json()) as { versions: RoomVersion[] };
+      if (!response.ok) throw new Error(data.error || "Version save failed");
+      if (!Array.isArray(data.versions)) throw new Error("The version list was not returned.");
       setVersions(data.versions);
       prependEvent(event);
       if (socketRef.current?.connected) socketRef.current.emit("room:event", { roomId, event });
       setSyncStatus("Project version saved");
-    } catch {
-      setSyncStatus("Could not save project version");
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not save project version";
+      setSyncStatus(message);
+      setSaveError(language === "zh" ? `无法确认版本是否保存：${message}。服务器可能仍在处理，请稍等并检查版本历史后再决定是否重试。` : `Could not confirm whether the version was saved: ${message}. The server may still be processing it; wait and check version history before retrying.`);
+      if (socketRef.current?.connected) socketRef.current.emit("room:join", roomId);
+      return false;
+    } finally {
+      versionOperationInFlightRef.current = false;
+      setVersionOperationPending(false);
     }
   };
 
   const handleRestoreVersion = async (version: RoomVersion) => {
     if (rejectViewerEdit()) return;
+    if (versionOperationInFlightRef.current) {
+      setSaveError(language === "zh" ? "版本操作正在进行，请等待完成。" : "A version operation is already in progress. Please wait.");
+      return;
+    }
+    if (hasPendingVersionChanges(pendingEditsRef.current.size, noteInFlightRef.current || replyInFlightRef.current, clipUploadInFlightRef.current || referenceUploadInFlightRef.current)) {
+      setSaveError("Wait for your current edits, note or audio upload to finish saving before restoring a version.");
+      return;
+    }
+    if (!window.confirm(language === "zh" ? `恢复“${version.name}”吗？当前编曲会先保存为一个版本。` : `Restore “${version.name}”? The current arrangement will be saved as a version first.`)) return;
+    versionOperationInFlightRef.current = true;
+    setVersionOperationPending(true);
     const event = createEvent("sync", "Project version restored", `${currentUserName} restored “${version.name}”.`);
     setSyncStatus(`Restoring ${version.name}`);
     try {
-      const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/versions/${encodeURIComponent(version.id)}/restore`, {
+      const { response, data } = await requestVersionChange<{ error?: string }>(`/api/rooms/${encodeURIComponent(roomId)}/versions/${encodeURIComponent(version.id)}/restore`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ event }),
       });
-      if (!response.ok) throw new Error("Version restore failed");
-      const data = (await response.json()) as {
-        tracks: Track[];
-        timelineRegions: TimelineRegion[];
-        composition: MusicComposition | null;
-        audioClips: AudioClip[];
-        versions: RoomVersion[];
-        bpm: number;
-        timeSignature: string;
-      };
-      setTracks(data.tracks);
-      setTimelineRegions(data.timelineRegions);
-      setComposition(data.composition);
-      setAudioClips(data.audioClips);
-      setVersions(data.versions);
-      setBpm(data.bpm ?? 96);
-      setTimeSignature(data.timeSignature ?? "4/4");
-      setTimelineUndoStack([]);
-      setTimelineRedoStack([]);
-      prependEvent(event);
-      if (socketRef.current?.connected) {
-        socketRef.current.emit("room:tracks", { roomId, tracks: data.tracks, event });
-        socketRef.current.emit("room:timeline", { roomId, timelineRegions: data.timelineRegions, event });
-        socketRef.current.emit("room:settings", { roomId, bpm: data.bpm ?? 96, timeSignature: data.timeSignature ?? "4/4", event });
-      }
+      if (!response.ok) throw new Error(data.error || "Version restore failed");
       setSyncStatus(`${version.name} restored`);
-    } catch {
-      setSyncStatus("Could not restore project version");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not restore project version";
+      setSyncStatus(message);
+      setSaveError(language === "zh" ? `无法确认版本恢复结果：${message}。服务器可能仍在处理，请稍等并检查当前房间和版本历史后再重试。` : `Could not confirm the version restore: ${message}. The server may still be processing it; wait and check the current room and version history before retrying.`);
+      if (socketRef.current?.connected) socketRef.current.emit("room:join", roomId);
+    } finally {
+      versionOperationInFlightRef.current = false;
+      setVersionOperationPending(false);
     }
   };
 
@@ -1180,18 +1465,27 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     const selected = timelineRegions[selectedIndex];
     const lane = selected.lane ?? Math.min(selectedIndex, Math.max(0, tracks.length - 1));
     let nextRegions = timelineRegions;
+    let split: { originalId: string; newId: string } | undefined;
     let event: RoomEvent;
 
     if (label === "Split" && selected.width >= 10) {
       const firstWidth = Math.round((selected.width / 2) * 10) / 10;
       const secondWidth = Math.round((selected.width - firstWidth) * 10) / 10;
       const sourceClip = audioClips.find((clip) => clip.id === selected.clipId);
-      const sourceDuration = selected.sourceDuration ?? sourceClip?.duration;
+      const sourceDuration = availableRegionDuration(selected, sourceClip);
+      if (!canEditRegionTiming(sourceDuration)) {
+        const message = selected.clipId && !sourceClip
+          ? (language === "zh" ? "无法拆分：找不到关联的音频素材，请先检查素材库。" : "Cannot split: the source audio is missing from the clip library.")
+          : (language === "zh" ? "无法拆分：音频片段的源时长无效或为空。" : "Cannot split this clip because its source timing is invalid or empty.");
+        setSyncStatus(message);
+        setSaveError(message);
+        return;
+      }
       const firstSourceDuration = sourceDuration ? sourceDuration * (firstWidth / selected.width) : undefined;
       const first = { ...selected, lane, width: firstWidth, label: `${selected.label} A`, sourceDuration: firstSourceDuration };
       const second: TimelineRegion = {
         ...selected,
-        id: `${selected.id}-split-${Date.now().toString(36)}`,
+        id: createLocalId(`${selected.id}-split`),
         lane,
         left: Math.round((selected.left + firstWidth) * 10) / 10,
         width: secondWidth,
@@ -1200,13 +1494,22 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
         sourceDuration: sourceDuration ? sourceDuration - firstSourceDuration! : undefined,
       };
       nextRegions = [...timelineRegions.slice(0, selectedIndex), first, second, ...timelineRegions.slice(selectedIndex + 1)];
+      split = { originalId: selected.id, newId: second.id };
       event = createEvent("remix", "Clip split", `${currentUserName} split ${selected.label} into two timeline clips.`);
     } else if (label === "Duplicate") {
+      const laneRegions = timelineRegions.filter((region, index) => (region.lane ?? Math.min(index, Math.max(0, tracks.length - 1))) === lane);
+      const left = findFreeTimelineStart(laneRegions, selected.width, selected.left + selected.width);
+      if (left === null) {
+        const message = language === "zh" ? "此音轨没有足够的空位来复制片段。" : "Not enough free space on this track to duplicate the clip.";
+        setSyncStatus(message);
+        setSaveError(message);
+        return;
+      }
       const duplicate: TimelineRegion = {
         ...selected,
-        id: `${selected.id}-copy-${Date.now().toString(36)}`,
+        id: createLocalId(`${selected.id}-copy`),
         lane,
-        left: clampRegionStart(selected.left + Math.max(3, selected.width + 1), selected.width),
+        left,
         label: `${selected.label} copy`,
       };
       nextRegions = [...timelineRegions, duplicate];
@@ -1218,7 +1521,19 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
       return;
     }
 
-    publishTimelineChange(nextRegions, event);
+    publishTimelineChange(nextRegions, event, true, split);
+  };
+
+  const handleTimelineAIContext = (regionId?: string) => {
+    const region = timelineRegions.find((item) => item.id === regionId);
+    const clip = audioClips.find((item) => item.id === region?.clipId);
+    if (!clip) {
+      setSyncStatus("Select an uploaded audio clip to give it to Music Copilot as context");
+      return;
+    }
+    setCopilotSourceClip(clip);
+    setOpenCopilotRequest((current) => current + 1);
+    setSyncStatus(`${clip.name} added as Music Copilot context`);
   };
 
   const handleRegionsChange = (
@@ -1228,15 +1543,33 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   ) => {
     const previousRegion = timelineRegions.find((region) => region.id === changedRegion.id);
     const sourceClip = audioClips.find((clip) => clip.id === changedRegion.clipId);
-    const previousSourceDuration = previousRegion?.sourceDuration ?? sourceClip?.duration;
-    const sourceChange = previousRegion && previousSourceDuration && mode !== "move"
-      ? previousSourceDuration * (Math.abs(changedRegion.width - previousRegion.width) / Math.max(previousRegion.width, 0.1))
-      : 0;
+    const previousSourceDuration = previousRegion ? availableRegionDuration(previousRegion, sourceClip) : undefined;
+    if (mode !== "move" && !canEditRegionTiming(previousSourceDuration)) {
+      const message = previousRegion?.clipId && !sourceClip
+        ? (language === "zh" ? "无法调整长度：找不到关联的音频素材，请先检查素材库。" : "Cannot resize: the source audio is missing from the clip library.")
+        : (language === "zh" ? "无法调整长度：音频片段的源时长无效或为空。" : "Cannot resize this clip because its source timing is invalid or empty.");
+      setSyncStatus(message);
+      setSaveError(message);
+      return;
+    }
     const normalizedRegions = nextRegions.map((region) => {
       if (region.id !== changedRegion.id || !previousRegion || !previousSourceDuration || mode === "move") {
         return { ...region, left: Math.round(region.left * 10) / 10, width: Math.round(region.width * 10) / 10 };
       }
-      const growing = region.width > previousRegion.width;
+      let width = region.width;
+      let left = region.left;
+      if (sourceClip && width > previousRegion.width) {
+        const availableDuration = mode === "resize-start"
+          ? (previousRegion.sourceOffset ?? 0) + previousSourceDuration
+          : sourceClip.duration - (previousRegion.sourceOffset ?? 0);
+        const maxWidth = previousRegion.width * Math.max(0, availableDuration) / previousSourceDuration;
+        if (width > maxWidth) {
+          width = maxWidth;
+          if (mode === "resize-start") left = previousRegion.left + previousRegion.width - width;
+        }
+      }
+      const sourceChange = previousSourceDuration * (Math.abs(width - previousRegion.width) / Math.max(previousRegion.width, 0.1));
+      const growing = width > previousRegion.width;
       const nextSourceOffset = mode === "resize-start"
         ? Math.max(0, (previousRegion.sourceOffset ?? 0) + (growing ? -sourceChange : sourceChange))
         : previousRegion.sourceOffset;
@@ -1246,8 +1579,8 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
         : unclampedDuration;
       return {
         ...region,
-        left: Math.round(region.left * 10) / 10,
-        width: Math.round(region.width * 10) / 10,
+        left: Math.round(left * 10) / 10,
+        width: Math.round(width * 10) / 10,
         sourceOffset: nextSourceOffset,
         sourceDuration: nextSourceDuration,
       };
@@ -1281,6 +1614,9 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
         shareUrl += `?invite=${encodeURIComponent(data.token)}`;
       }
       await navigator.clipboard.writeText(shareUrl);
+      if (isLoopbackHostname(window.location.hostname)) {
+        setSaveError(language === "zh" ? "链接已复制，但这是本机地址，其他设备无法通过它访问。远程协作需要部署可访问的网站。" : "Link copied, but this is a local address and cannot be opened from another device. Remote collaboration requires an accessible deployment.");
+      }
       setShareStatus(roomId === "demo" ? "Link copied" : `${role === "viewer" ? "Viewer" : "Editor"} invite copied`);
       window.setTimeout(() => setShareStatus("Share room"), 1800);
     } catch (error) {
@@ -1305,52 +1641,52 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     const event = createEvent("sync", "Session timing changed", `${currentUserName} set the room to ${nextBpm} BPM · ${nextTimeSignature}.`);
     prependEvent(event);
     if (socketRef.current?.connected) {
-      socketRef.current.emit("room:settings", { roomId, bpm: nextBpm, timeSignature: nextTimeSignature, event });
-      setSyncStatus("Session timing broadcast through Socket.io");
+      pendingEditsRef.current.add(`settings:${event.id}`);
+      setEditSaveState("saving");
+      socketRef.current.emit("room:settings", { roomId, arrangementEpoch: arrangementEpochRef.current, bpm: nextBpm, timeSignature: nextTimeSignature, event });
+      setSyncStatus("Saving session timing");
       return;
     }
-    fetch(`/api/rooms/${encodeURIComponent(roomId)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bpm: nextBpm, timeSignature: nextTimeSignature }),
-    });
-    fetch(`/api/rooms/${encodeURIComponent(roomId)}/events`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ event }),
-    });
+    void persistRoomChanges(
+      { url: `/api/rooms/${encodeURIComponent(roomId)}`, init: { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bpm: nextBpm, timeSignature: nextTimeSignature, arrangementEpoch: arrangementEpochRef.current }) } },
+      { url: `/api/rooms/${encodeURIComponent(roomId)}/events`, init: { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event }) } },
+    );
   };
 
   const handleMemberRole = async (member: RoomMember, role: "editor" | "viewer") => {
-    const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/members/${encodeURIComponent(member.userId)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ role }),
-    });
-    if (response.ok) {
+    try {
+      const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/members/${encodeURIComponent(member.userId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role }),
+      });
+      if (!response.ok) throw new Error("Role update failed");
       setMembers((current) => current.map((item) => item.userId === member.userId ? { ...item, role } : item));
       setSyncStatus(`${member.name} is now ${role}`);
-    } else {
-      setSyncStatus("Only the room owner can change member roles");
+    } catch {
+      setSyncStatus("Could not update member access. Check your connection and try again.");
     }
   };
 
   const handleRemoveMember = async (member: RoomMember) => {
-    const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/members/${encodeURIComponent(member.userId)}`, { method: "DELETE" });
-    if (response.ok) {
+    try {
+      const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/members/${encodeURIComponent(member.userId)}`, { method: "DELETE" });
+      if (!response.ok) throw new Error("Member removal failed");
       setMembers((current) => current.filter((item) => item.userId !== member.userId));
       setSyncStatus(`${member.name} was removed from the room`);
-    } else {
-      setSyncStatus("Only the room owner can remove members");
+    } catch {
+      setSyncStatus("Could not remove member. Check your access and try again.");
     }
   };
 
   const copilotPanel = (
     <MusicAgentPanel
+      key={roomId}
       roomId={roomId}
       onGeneratedAudioReady={handleGeneratedMusicReady}
       onAddGeneratedAudioToRoom={handleAddGeneratedMusicToRoom}
       sourceClip={copilotSourceClip}
+      onClearSourceClip={() => setCopilotSourceClip(null)}
       readOnly={!canEdit}
       compact
     />
@@ -1359,21 +1695,23 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   return (
     <main className="min-h-screen bg-[#f7f7f5] p-2 text-white lg:h-screen lg:overflow-hidden">
       <section className="relative mx-auto flex min-h-[calc(100vh-16px)] max-w-[1920px] flex-col overflow-hidden rounded-[18px] bg-[#f1f0eb] shadow-2xl md:h-[calc(100vh-16px)]">
-        <header className="flex min-h-16 shrink-0 flex-wrap items-center justify-between gap-3 bg-[#174a78] px-4 py-2">
-          <div className="flex items-center gap-3">
-            <Link href="/dashboard" className="grid h-9 w-9 place-items-center rounded-[8px] text-white/60 transition hover:bg-white/8 hover:text-white" title="Back to dashboard"><ArrowLeft className="h-4 w-4" /></Link>
+        <header className="flex min-h-16 shrink-0 flex-col items-stretch justify-between gap-2 bg-[#174a78] px-4 py-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
+          <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 sm:gap-3">
+            <Link href="/dashboard" onClick={(event) => { const warning = hasRecordingAtRisk ? (language === "zh" ? "录音正在进行或尚未保存，离开可能丢失录音和未发送的草稿。确定离开吗？" : "A recording is in progress or not yet saved. Leaving may lose it and any unsent drafts. Leave anyway?") : hasUnsavedNoteDraft ? (language === "zh" ? "有未发送的留言或回复，离开后草稿会丢失。确定离开吗？" : "You have an unsent note or reply. Leave and discard the draft?") : versionOperationPending ? (language === "zh" ? "版本操作尚未完成，离开后可能无法确认结果。确定离开吗？" : "A version operation is still in progress. Leaving may prevent confirmation of its result. Leave anyway?") : ""; if (warning && !window.confirm(warning)) event.preventDefault(); }} className="grid h-9 w-9 place-items-center rounded-[8px] text-white/60 transition hover:bg-white/8 hover:text-white" title="Back to dashboard"><ArrowLeft className="h-4 w-4" /></Link>
             <div className="h-7 w-px bg-white/12" />
-            <div><h1 className="text-[17px] font-semibold text-white">{roomTitle}</h1><p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-white/42"><Circle className="h-2 w-2 fill-[#2f69c8] text-[#2f69c8]" />Room online</p></div>
+            <div><h1 className="text-[17px] font-semibold text-white">{roomTitle}</h1><p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-white/70"><Circle className={`h-2 w-2 ${connectionState === "online" ? "fill-[#58e081] text-[#58e081]" : "fill-[#f0be64] text-[#f0be64]"}`} />{roomConnectionLabel(connectionState, language)}</p></div>
           </div>
-          <div className="flex items-center gap-3">
-            <button type="button" className="flex items-center gap-2 rounded-[8px] px-2 py-1 transition hover:bg-white/8" onClick={() => setShowMembers((value) => !value)} title="Room members" aria-label="Room members"><CollaboratorAvatars names={members.length ? members.slice(0, 3).map((member) => member.name.slice(0, 2).toUpperCase()) : ["ZZ", "FC", "LM"]} /><span className="hidden text-xs text-white/42 lg:inline">{onlineCount} online · {currentRole}</span></button>
+          <div className="flex flex-wrap items-center gap-3">
+            <button type="button" className="flex items-center gap-2 rounded-[8px] px-2 py-1 transition hover:bg-white/8" onClick={() => setShowMembers((value) => !value)} title={language === "zh" ? "房间成员" : "Room members"} aria-label={language === "zh" ? "房间成员" : "Room members"}>{members.length ? <CollaboratorAvatars names={members.slice(0, 3).map((member) => member.name.slice(0, 2).toUpperCase())} /> : <UsersRound className="h-5 w-5 text-white/70" />}<span className="hidden text-xs text-white/70 lg:inline">{connectionState === "online" ? (language === "zh" ? `${onlineCount} 人在线` : `${onlineCount} online`) : (language === "zh" ? "未连接" : "Not connected")} · {isAccessLoading ? (language === "zh" ? "正在检查权限" : "checking access") : language === "zh" ? ({ owner: "所有者", editor: "编辑者", viewer: "查看者" }[currentRole] ?? currentRole) : currentRole}</span></button>
             <span className="hidden max-w-[220px] truncate text-[11px] text-white/45 xl:inline" title={syncStatus}>{syncStatus}</span>
-            <div className="flex items-center border-x border-white/10 px-2">
+            {editSaveState !== "idle" ? <span role="status" className={`text-[11px] ${editSaveState === "error" ? "text-[#ffe0ad]" : "text-white/75"}`}>{editSaveState === "saving" ? "Saving edits..." : editSaveState === "saved" ? "Edits saved" : "Save needs attention"}</span> : null}
+            <div className="hidden items-center border-x border-white/10 px-2 sm:flex">
               <button className="workstation-dark-tool" onClick={handleUndoTimeline} disabled={!canEdit || !timelineUndoStack.length} title="Undo"><Undo2 className="h-4 w-4" /></button>
               <button className="workstation-dark-tool" onClick={handleRedoTimeline} disabled={!canEdit || !timelineRedoStack.length} title="Redo"><Redo2 className="h-4 w-4" /></button>
             </div>
             <LanguageSwitcher compact />
-            <GlassButton icon={Share2} className="rounded-[9px] border-white/10 bg-white/8 px-4 py-2 text-xs" onClick={() => void handleShareRoom(inviteRole)}>{shareStatus}</GlassButton>
+            {currentRole === "owner" && !isAccessLoading ? <a href={`/api/rooms/${encodeURIComponent(roomId)}/backup`} download className="grid h-9 w-9 place-items-center rounded-[8px] text-white/75 transition hover:bg-white/10 hover:text-white" aria-label="Download project backup" title="Download project backup (ZIP)"><Download className="h-4 w-4" /></a> : null}
+            <GlassButton icon={Share2} className="min-w-0 rounded-[9px] border-white/10 bg-white/8 px-3 py-2 text-xs sm:px-4" onClick={() => void handleShareRoom(inviteRole)}>{shareStatus}</GlassButton>
           </div>
         </header>
 
@@ -1383,19 +1721,24 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
           <div className="mt-3 space-y-1.5">{members.length ? members.map((member) => <div key={member.userId} className="flex items-center gap-2 rounded-[8px] bg-[#18202a]/[0.045] px-3 py-2"><span className="grid h-7 w-7 place-items-center rounded-full bg-[#184eb6] text-[10px] font-bold text-white">{member.name.slice(0, 1).toUpperCase()}</span><div className="min-w-0 flex-1"><p className="truncate text-xs font-semibold">{member.name}</p><p className="truncate text-[10px] text-[#172033]/42">{member.email ?? member.role}</p></div>{member.role === "owner" || currentRole !== "owner" ? <span className="text-[10px] capitalize text-[#172033]/48">{member.role}</span> : <><select value={member.role} onChange={(event) => void handleMemberRole(member, event.target.value as "editor" | "viewer")} className="rounded-[6px] border border-[#18202a]/10 bg-white px-1.5 py-1 text-[10px]"><option value="editor">Editor</option><option value="viewer">Viewer</option></select><button type="button" onClick={() => void handleRemoveMember(member)} className="text-[10px] text-[#a33a36]">Remove</button></>}</div>) : <p className="rounded-[8px] border border-dashed border-[#18202a]/12 p-3 text-xs text-[#172033]/46">No invited members yet. Use Share room to invite an editor.</p>}</div>
         </div> : null}
 
-        {!canEdit ? <div className="shrink-0 bg-[#dfe8f4] px-4 py-1.5 text-center text-[11px] font-medium text-[#174a78]">View-only access: playback, navigation and export are available. Editing is locked.</div> : null}
-        <ControlPanel readOnly={!canEdit} uploadedFileName={uploadedFileName} uploadedAudioUrl={uploadedAudioUrl} onAudioUpload={handleUpload} onRecordedClip={handleClipUpload} roomId={roomId} tracks={tracks} regions={timelineRegions} audioClips={audioClips} onPlayheadChange={setPlayheadPosition} snapMode={snapMode} onSnapModeChange={setSnapMode} seekRequest={seekRequest} transportCommand={transportCommand} onTransportAction={handleTransportAction} bpm={bpm} timeSignature={timeSignature} onSessionSettingsChange={handleSessionSettingsChange} />
+        {roomError ? <div className="grid min-h-0 flex-1 place-items-center bg-[#f1f0eb] p-6 text-center text-[#172033]" role="alert"><div><p className="text-sm font-semibold">Room not found</p><p className="mt-2 text-sm text-[#172033]/60">{roomError}</p><Link href="/dashboard" className="mt-4 inline-block rounded-[7px] bg-[#184eb6] px-4 py-2 text-sm font-semibold text-white">Back to dashboard</Link></div></div> : isRoomLoading ? <div className="grid min-h-0 flex-1 place-items-center bg-[#f1f0eb] text-[#172033]" role="status"><div className="text-center"><AudioWaveform className="mx-auto h-7 w-7 animate-pulse text-[#184eb6]" /><p className="mt-3 text-sm font-semibold">Loading workspace...</p><p className="mt-1 text-xs text-[#172033]/42">Restoring tracks, clips and room access</p></div></div> : <>
+        {saveError ? <div className="flex shrink-0 items-center justify-center gap-3 bg-[#fff0e9] px-4 py-2 text-xs text-[#8b2d20]" role="alert"><span>{saveError}</span><button type="button" onClick={() => setSaveError("")} className="font-semibold underline">{language === "zh" ? "关闭" : "Dismiss"}</button></div> : null}
+        {legacyOpenRoom ? <div role="alert" className="shrink-0 bg-[#fff0e9] px-4 py-2 text-center text-xs text-[#8b2d20]">This older room has no account owner and is not private. Log in and duplicate it from the dashboard to create a private copy.</div> : null}
+        {roomId === "demo" && timelineRegions.some((region) => !region.clipId) ? <div className="shrink-0 bg-[#f2f0dc] px-4 py-2 text-center text-xs text-[#5d5424]">{t(hasPlayableAudio(uploadedAudioUrl, audioClips, timelineRegions) ? "room.demoPlayableNotice" : "room.demoSampleNotice")}</div> : null}
+        {isAccessLoading ? <div className="shrink-0 bg-[#eef2f6] px-4 py-1.5 text-center text-[11px] font-medium text-[#174a78]" role="status">{language === "zh" ? "正在检查房间权限……" : "Checking room access..."}</div> : connectionState !== "online" ? <div className="shrink-0 bg-[#fff0e9] px-4 py-1.5 text-center text-[11px] font-medium text-[#8b2d20]" role="status">{roomConnectionMessage(connectionState, language)}</div> : !canEdit ? <div className="shrink-0 bg-[#dfe8f4] px-4 py-1.5 text-center text-[11px] font-medium text-[#174a78]">{language === "zh" ? "只读权限：可以播放、浏览和导出，但不能编辑。" : "View-only access: playback, navigation and export are available. Editing is locked."}</div> : null}
+        <ControlPanel readOnly={!canEdit} uploadedFileName={uploadedFileName} uploadedAudioUrl={uploadedAudioUrl} referenceMuted={referenceMuted} onReferenceMuteChange={handleReferenceMute} onAudioUpload={handleUpload} onRecordedClip={handleClipUpload} onRecordingAtRiskChange={setHasRecordingAtRisk} roomId={roomId} tracks={tracks} regions={timelineRegions} audioClips={audioClips} onPlayheadChange={setPlayheadPosition} snapMode={snapMode} onSnapModeChange={setSnapMode} seekRequest={seekRequest} transportCommand={transportCommand} onTransportAction={handleTransportAction} bpm={bpm} timeSignature={timeSignature} onSessionSettingsChange={handleSessionSettingsChange} />
 
-        <div className="grid min-h-0 flex-1 md:grid-cols-[170px_minmax(0,1fr)_230px] xl:grid-cols-[210px_minmax(0,1fr)_300px]">
-          <TrackList readOnly={!canEdit} tracks={tracks} onAddTrack={handleAddTrack} onRenameTrack={handleRenameTrack} onToggleMute={handleToggleMute} onToggleSolo={handleToggleSolo} onSetVolume={handleSetTrackVolume} onDeleteTrack={handleDeleteTrack} />
-          <WorkstationTimeline readOnly={!canEdit} tracks={tracks} regions={timelineRegions} notes={notes} uploadedFileName={uploadedFileName} waveformPeaks={waveformPeaks} audioClips={audioClips} playheadPosition={playheadPosition} onSelectionAction={handleSelectionAction} onRegionsChange={handleRegionsChange} snapMode={snapMode} onPlayheadSeek={(position) => { setPlayheadPosition(position); setSeekRequest((current) => ({ id: (current?.id ?? 0) + 1, position })); }} />
-          <WorkstationInspector readOnly={!canEdit} notes={notes} events={events} copilot={copilotPanel} onSendNote={handleSendNote} onResolveNote={handleResolveNote} onDeleteNote={handleDeleteNote} onSelectNote={(position) => { setPlayheadPosition(position); setSeekRequest((current) => ({ id: (current?.id ?? 0) + 1, position })); setSyncStatus(`Jumped to note at ${Math.round(position)}%`); }} versions={versions} onCreateVersion={handleCreateVersion} onRestoreVersion={handleRestoreVersion} />
+        <div className="workstation-grid grid min-h-0 flex-1 md:grid-cols-[170px_minmax(0,1fr)_230px] xl:grid-cols-[210px_minmax(0,1fr)_300px]">
+          <TrackList readOnly={!canEdit} tracks={tracks} regions={timelineRegions} onAddTrack={handleAddTrack} onRenameTrack={handleRenameTrack} onToggleMute={handleToggleMute} onToggleSolo={handleToggleSolo} onSetVolume={handleSetTrackVolume} onDeleteTrack={handleDeleteTrack} />
+          <WorkstationTimeline readOnly={!canEdit} tracks={tracks} regions={timelineRegions} notes={notes} uploadedFileName={uploadedFileName} waveformPeaks={waveformPeaks} audioClips={audioClips} bpm={bpm} playheadPosition={playheadPosition} onSelectionAction={handleSelectionAction} onUseAIContext={handleTimelineAIContext} onRegionsChange={handleRegionsChange} snapMode={snapMode} onSelectionChange={setSelectedRegionId} onPlayheadSeek={(position) => { setPlayheadPosition(position); setSeekRequest((current) => ({ id: (current?.id ?? 0) + 1, position })); }} />
+          <WorkstationInspector readOnly={!canEdit} roomId={roomId} notes={notes} events={events} copilot={copilotPanel} openCopilotRequest={openCopilotRequest} regions={timelineRegions} selectedRegion={timelineRegions.find((region) => region.id === selectedRegionId)} onSendNote={handleSendNote} onReplyToNote={handleReplyToNote} onDraftPresenceChange={setHasUnsavedNoteDraft} onResolveNote={handleResolveNote} onDeleteNote={handleDeleteNote} onSelectNote={(position) => { setPlayheadPosition(position); setSeekRequest((current) => ({ id: (current?.id ?? 0) + 1, position })); setSyncStatus(`Jumped to note at ${Math.round(position)}%`); }} versions={versions} versionOperationPending={versionOperationPending} onCreateVersion={handleCreateVersion} onRestoreVersion={handleRestoreVersion} />
         </div>
 
         <div className="shrink-0 border-t border-[#18202a]/12 bg-[#f6f4ef] text-[#172033]">
           <button type="button" className="flex h-12 w-full items-center justify-between px-5 text-sm" onClick={()=>setIsClipLibraryOpen((value)=>!value)}><span className="font-semibold">{isClipLibraryOpen ? "Hide clips" : "Clips"} <span className="ml-1 font-normal text-[#172033]/42">{audioClips.length}</span></span><span className="text-xs text-[#172033]/42">Upload stems and send clips to Copilot</span></button>
-          {isClipLibraryOpen ? <div className="max-h-[300px] overflow-y-auto border-t border-[#18202a]/10 p-3"><ClipLibrary readOnly={!canEdit} roomId={roomId} clips={audioClips} tracks={tracks} isUploading={isUploadingClip} onUpload={handleClipUpload} onDelete={handleClipDelete} onAddToTimeline={handleAddClipToTimeline} onUseForAI={(clip)=>{setCopilotSourceClip(clip);setSyncStatus(`${clip.name} selected as Music Copilot context`);}} /></div> : null}
+          {isClipLibraryOpen ? <div className="max-h-[300px] overflow-y-auto border-t border-[#18202a]/10 p-3"><ClipLibrary readOnly={!canEdit} roomId={roomId} clips={audioClips} tracks={tracks} isUploading={isUploadingClip} onUpload={handleClipUpload} onDelete={handleClipDelete} onAddToTimeline={handleAddClipToTimeline} onAddGeneratedTrack={handleAddGeneratedMusicToRoom} onUseForAI={(clip)=>{setCopilotSourceClip(clip);setOpenCopilotRequest((current)=>current+1);setSyncStatus(`${clip.name} selected as Music Copilot context`);}} /></div> : null}
         </div>
+        </>}
       </section>
     </main>
   );
