@@ -199,7 +199,7 @@ export function MusicAgentPanel({
         <button
           type="submit"
           disabled={readOnly || isGenerating || isAddingToRoom || prompt.trim().length < 8}
-          className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-[8px] bg-human px-5 py-3 text-sm font-medium text-white transition hover:bg-human-ink disabled:cursor-not-allowed disabled:opacity-45"
+          className="mt-3 inline-flex h-10 w-full items-center justify-center gap-2 rounded-full bg-black px-5 text-sm text-white transition-colors hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-45"
         >
           <Sparkles className="h-4 w-4" />
           {t(isGenerating ? "music.generating" : "music.generate")}

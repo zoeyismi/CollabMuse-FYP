@@ -240,4 +240,6 @@ COLLABMUSE_TEST_URL=http://localhost:3045 COLLABMUSE_TEST_DATA_DIR=/tmp/collabmu
 
 已验证：`npx tsc --noEmit` 通过；单元测试 96/96 通过；`npm run lint` 0 error（17 个 warning 为原有）。浏览器中查看了首页（中文，1440 宽与 375 宽，无横向溢出）、登录页（邀请态）、仪表盘、演示房间，编曲视图三个标签可切换。
 
-未验证：英文以外的其他语言首页文案（es/fr/de/ja/ko/pt 回落为英文）；仪表盘与房间内部分文案仍只有英文（原本就未接入 i18n）；房间内录音、导出、Copilot 生成流程未在新样式下逐项点测；`SphericalCarousel`、`HomepageProductReveal`、`FeatureCard`、`DashboardProjectCarousel` 已不再被页面使用，未删除。
+补充（同日，隔离数据目录 + 无 ElevenLabs 密钥，用本地编曲器）：在 1024 宽浏览器中走通注册 → 新建房间 → Copilot 生成 30 秒音乐 → 加入工作台 → 播放/暂停 → 选中片段拆分 → 发留言 → 保存版本。顺手修了仪表盘在 1024 宽时统计卡挤压、表格操作列溢出，留言筛选换行、留言操作行溢出，协作者头像和 Copilot 生成按钮的配色。
+
+未验证：导出 WAV 与下载备份（会下载文件，未执行）；录音（需要麦克风）；英文以外的其他语言首页文案（es/fr/de/ja/ko/pt 回落为英文）；仪表盘与房间内部分文案仍只有英文（原本就未接入 i18n）；房间内录音、导出、Copilot 生成流程未在新样式下逐项点测；`SphericalCarousel`、`HomepageProductReveal`、`FeatureCard`、`DashboardProjectCarousel` 已不再被页面使用，未删除。

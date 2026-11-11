@@ -491,8 +491,8 @@ export default function DashboardPage() {
               </form>
             ) : null}
 
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-[minmax(0,2.4fr)_repeat(3,minmax(0,1fr))]">
-              <div className="flex min-h-[104px] items-center gap-4 rounded-2xl bg-cream p-4 sm:col-span-2 lg:col-span-1">
+            <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-[minmax(0,2.4fr)_repeat(3,minmax(0,1fr))]">
+              <div className="flex min-h-[104px] items-center gap-4 rounded-2xl bg-cream p-4 sm:col-span-3 xl:col-span-1">
                 {isLoadingRooms ? (
                   <div className="flex items-center gap-4" role="status"><span className="h-16 w-[88px] animate-pulse rounded-[10px] bg-stone" /><p className="text-sm text-ink-600">Loading your rooms…</p></div>
                 ) : latestRoom ? (
@@ -551,14 +551,14 @@ export default function DashboardPage() {
                 </div>
 
                 <div className="mt-3 overflow-x-auto">
-                  <table className="w-full min-w-[680px] border-collapse text-left">
+                  <table className="w-full min-w-[680px] table-fixed border-collapse text-left">
                     <thead>
                       <tr className="text-[13px] text-ink-600">
                         <th scope="col" className="py-2 pl-2 pr-3 font-normal">Room</th>
-                        <th scope="col" className="w-[112px] px-3 py-2 font-normal">Stage</th>
-                        <th scope="col" className="w-[96px] px-3 py-2 font-normal">Access</th>
-                        <th scope="col" className="w-[120px] px-3 py-2 font-normal">Updated</th>
-                        <th scope="col" className="w-[176px] py-2 pl-3 pr-2"><span className="sr-only">Actions</span></th>
+                        <th scope="col" className="w-[100px] px-3 py-2 font-normal">Stage</th>
+                        <th scope="col" className="w-[88px] px-3 py-2 font-normal">Access</th>
+                        <th scope="col" className="w-[104px] px-3 py-2 font-normal">Updated</th>
+                        <th scope="col" className="w-[208px] py-2 pl-3 pr-2"><span className="sr-only">Actions</span></th>
                       </tr>
                     </thead>
                     <tbody>
@@ -571,8 +571,8 @@ export default function DashboardPage() {
                               <div className="flex items-center gap-3">
                                 <Image src={covers[index % covers.length]} alt="" width={80} height={80} className="h-10 w-10 shrink-0 rounded-lg object-cover" />
                                 <div className="min-w-0">
-                                  <Link href={`/room/${encodeURIComponent(room.id)}`} className="block max-w-[280px] truncate text-sm hover:underline">{room.title}</Link>
-                                  <p className="max-w-[280px] truncate font-mono text-xs text-ink-600">{room.bpm ?? 96} BPM · {room.audioClips?.length ?? 0} clips · {room.notes?.filter((note) => !note.resolved).length ?? 0} open notes</p>
+                                  <Link href={`/room/${encodeURIComponent(room.id)}`} className="block truncate text-sm hover:underline">{room.title}</Link>
+                                  <p className="truncate font-mono text-xs text-ink-600">{room.bpm ?? 96} BPM · {room.audioClips?.length ?? 0} clips · {room.notes?.filter((note) => !note.resolved).length ?? 0} open notes</p>
                                 </div>
                               </div>
                             </td>

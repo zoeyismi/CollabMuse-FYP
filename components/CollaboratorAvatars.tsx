@@ -6,10 +6,10 @@ type CollaboratorAvatarsProps = {
 };
 
 const tones = [
-  "bg-[#efd84c] text-[#11120b]",
+  "bg-human-wash text-human-ink",
   "bg-human text-white",
-  "bg-[#b71912] text-white",
-  "bg-cream text-black",
+  "bg-ink-700 text-white",
+  "bg-stone text-black",
 ];
 
 export function CollaboratorAvatars({ names, className }: CollaboratorAvatarsProps) {
