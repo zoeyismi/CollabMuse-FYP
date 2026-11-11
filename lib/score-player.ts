@@ -112,3 +112,25 @@ export async function previewNote(partId: string, role: PartRole, midi: number) 
   const Tone = await loadTone();
   voiceFor(Tone, partId, role).trigger(midi, 0.3, Tone.now() + 0.01, 0.7);
 }
+
+/** Renders the score to an AudioBuffer offline (for WAV export). */
+export async function renderScore(score: Score, bpm: number): Promise<AudioBuffer | null> {
+  const playable = score.parts.filter((part) => !part.muted && part.notes.length);
+  if (!playable.length) return null;
+  const Tone = tone ?? (tone = await import("tone"));
+  const spb = 60 / Math.max(20, bpm);
+  const lastBeat = Math.max(...playable.flatMap((part) => part.notes.map((note) => note.start + note.duration)));
+  const seconds = Math.min(300, lastBeat * spb + 1.5);
+  const rendered = await Tone.Offline(({ transport }) => {
+    for (const part of playable) {
+      const voice = createVoice(Tone, part.role);
+      voice.volume.value = (part.role === "pad" ? -14 : part.role === "drums" ? -6 : -9) + 20 * Math.log10(Math.max(0.01, part.volume));
+      for (const note of part.notes) {
+        const duration = Math.max(0.05, note.duration * spb);
+        transport.schedule((time) => voice.trigger(note.midi, duration, time, note.velocity), note.start * spb);
+      }
+    }
+    transport.start(0);
+  }, seconds, 2, 44100);
+  return rendered.get() ?? null;
+}

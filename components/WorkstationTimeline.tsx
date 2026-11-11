@@ -1,5 +1,6 @@
 "use client";
 
+import { useRoomText } from "@/lib/i18n";
 import { useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { Copy, Scissors, Sparkles, Trash2 } from "@/components/Icons";
@@ -31,6 +32,7 @@ const fallbackBars = [24,38,52,31,46,28,57,35,42,26,49,34,55,30,44,22,50,37,58,2
 export const LANE_HEIGHT = 96;
 
 export function WorkstationTimeline({ readOnly = false, tracks, regions, notes, uploadedFileName, waveformPeaks, audioClips, bpm, playheadPosition = 52, onSelectionAction, onUseAIContext, onRegionsChange, snapMode, onPlayheadSeek, onSelectionChange }: Props) {
+  const tr = useRoomText();
   const [draft, setDraft] = useState(regions);
   const [selectedId, setSelectedId] = useState(regions[2]?.id ?? regions[0]?.id ?? "");
   const timelineRef = useRef<HTMLDivElement | null>(null);
@@ -152,7 +154,7 @@ export function WorkstationTimeline({ readOnly = false, tracks, regions, notes, 
                 <button
                   key={region.id}
                   type="button"
-                  title={!region.clipId ? "Example region: no audio attached" : !audioClips.some((clip) => clip.id === region.clipId) ? "Audio clip is unavailable" : region.label}
+                  title={!region.clipId ? tr("Example region: no audio attached") : !audioClips.some((clip) => clip.id === region.clipId) ? tr("Audio clip is unavailable") : region.label}
                   className={`workstation-region ${isSelected ? "is-selected" : ""}`}
                   style={{ left: `${region.left}%`, width: `${region.width}%` }}
                   onPointerDown={(event) => start(event, region, "move")}
@@ -175,12 +177,12 @@ export function WorkstationTimeline({ readOnly = false, tracks, regions, notes, 
       </div>
       <div className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-1 border-t border-stone bg-canvas px-3 py-1.5">
         <div className="flex flex-wrap items-center gap-1 text-xs text-ink-700">
-          <button className="workstation-tool" disabled={readOnly || !selected || selected.width < 10} onClick={()=>onSelectionAction("Split", selected?.id)} title="Split selection"><Scissors className="h-4 w-4" />Split</button>
-          <button className="workstation-tool" disabled={readOnly || !selected} onClick={()=>onSelectionAction("Duplicate", selected?.id)} title="Duplicate selection"><Copy className="h-4 w-4" />Duplicate</button>
-          <button className="workstation-tool" disabled={readOnly || !selected} onClick={()=>onSelectionAction("Delete", selected?.id)} title="Delete selection"><Trash2 className="h-4 w-4" />Delete</button>
-          <button className="workstation-tool text-copilot-ink" disabled={readOnly || !selectedClip} onClick={() => onUseAIContext(selected?.id)} title={selectedClip ? "Use selected audio clip as AI context" : "Select an uploaded audio clip first"}><Sparkles className="h-4 w-4" />AI context</button>
+          <button className="workstation-tool" disabled={readOnly || !selected || selected.width < 10} onClick={()=>onSelectionAction(tr("Split"), selected?.id)} title={tr("Split selection")}><Scissors className="h-4 w-4" />{tr("Split")}</button>
+          <button className="workstation-tool" disabled={readOnly || !selected} onClick={()=>onSelectionAction(tr("Duplicate"), selected?.id)} title={tr("Duplicate selection")}><Copy className="h-4 w-4" />{tr("Duplicate")}</button>
+          <button className="workstation-tool" disabled={readOnly || !selected} onClick={()=>onSelectionAction(tr("Delete"), selected?.id)} title={tr("Delete selection")}><Trash2 className="h-4 w-4" />{tr("Delete")}</button>
+          <button className="workstation-tool text-copilot-ink" disabled={readOnly || !selectedClip} onClick={() => onUseAIContext(selected?.id)} title={selectedClip ? tr("Use selected audio clip as AI context") : tr("Select an uploaded audio clip first")}><Sparkles className="h-4 w-4" />{tr("AI context")}</button>
         </div>
-        <p className="hidden font-mono text-xs text-ink-600 sm:block">{selected?.label ?? "No selection"} · Session {bpm} BPM{selected && !selected.clipId ? " · Example, no audio" : selected?.clipId && !selectedClip ? " · Audio unavailable" : selectedClip?.analysis?.energy ? ` · ${selectedClip.analysis.energy} energy` : ""}</p>
+        <p className="hidden font-mono text-xs text-ink-600 sm:block">{selected?.label ?? tr("No selection")} · Session {bpm} BPM{selected && !selected.clipId ? " · Example, no audio" : selected?.clipId && !selectedClip ? " · Audio unavailable" : selectedClip?.analysis?.energy ? ` · ${selectedClip.analysis.energy} energy` : ""}</p>
       </div>
     </section>
   );

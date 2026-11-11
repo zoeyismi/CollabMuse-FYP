@@ -1,5 +1,6 @@
 "use client";
 
+import { useRoomText } from "@/lib/i18n";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Pause, Play, Plus, Trash2, Upload } from "@/components/Icons";
 import type { AudioClip, Track } from "@/lib/mock-data";
@@ -23,6 +24,7 @@ function formatDuration(seconds: number) {
 }
 
 export function ClipLibrary({ readOnly = false, roomId, clips, tracks, isUploading, onUpload, onDelete, onUseForAI, onAddToTimeline, onAddGeneratedTrack }: ClipLibraryProps) {
+  const tr = useRoomText();
   const [trackId, setTrackId] = useState(tracks[0]?.id ?? "track");
   const [addingClipId, setAddingClipId] = useState<string | null>(null);
   const [playingClipId, setPlayingClipId] = useState<string | null>(null);
@@ -80,7 +82,7 @@ export function ClipLibrary({ readOnly = false, roomId, clips, tracks, isUploadi
           const track = tracks.find((item) => item.id === clip.trackId);
           return (
             <div key={clip.id} className="flex items-center gap-3 border-b border-stone p-3">
-              <button type="button" className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-human/10 text-human hover:bg-human/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-human" aria-label={`${playingClipId === clip.id ? "Pause" : "Play"} ${clip.name}`} title={`${playingClipId === clip.id ? "Pause" : "Play"} ${clip.name}`} onClick={() => {
+              <button type="button" className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-human/10 text-human hover:bg-human/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-human" aria-label={`${playingClipId === clip.id ? tr("Pause") : tr("Play")} ${clip.name}`} title={`${playingClipId === clip.id ? tr("Pause") : tr("Play")} ${clip.name}`} onClick={() => {
                 const audio = audioRefs.current.get(clip.id);
                 if (!audio) return;
                 if (!audio.paused) { audio.pause(); return; }
@@ -95,7 +97,7 @@ export function ClipLibrary({ readOnly = false, roomId, clips, tracks, isUploadi
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium">{clip.name}</p>
                 <p className="mt-0.5 text-[11px] text-ink-600">
-                  {track?.name ?? "Unassigned"} · {formatDuration(clip.duration)}
+                  {track?.name ?? tr("Unassigned")} · {formatDuration(clip.duration)}
                   {clip.analysis?.bpm ? ` · ${clip.analysis.bpm} BPM · ${clip.analysis.energy} energy` : ""}
                 </p>
                 <audio
@@ -124,16 +126,16 @@ export function ClipLibrary({ readOnly = false, roomId, clips, tracks, isUploadi
                     onAddToTimeline(clip, trackId);
                   }
                 }}
-                title={clip.generation && !track ? "Create a track for this generated audio" : "Add to the selected track"}
+                title={clip.generation && !track ? tr("Create a track for this generated audio") : tr("Add to the selected track")}
                 disabled={readOnly || addingClipId !== null || (!trackId && !(clip.generation && !track))}
               >
-                <Plus className="h-3.5 w-3.5" />{addingClipId === clip.id ? "Adding..." : clip.generation && !track ? "New track" : "Timeline"}
+                <Plus className="h-3.5 w-3.5" />{addingClipId === clip.id ? tr("Adding...") : clip.generation && !track ? tr("New track") : tr("Timeline")}
               </button>
               <button
                 type="button"
                 className="shrink-0 rounded-[7px] border border-stone bg-white/55 px-3 py-1.5 text-[10px] font-medium text-ink-600 transition hover:bg-white"
                 onClick={() => onUseForAI(clip)}
-                title="Use this clip as Music Copilot context"
+                title={tr("Use this clip as Music Copilot context")}
                 disabled={readOnly}
               >
                 AI context
@@ -142,7 +144,7 @@ export function ClipLibrary({ readOnly = false, roomId, clips, tracks, isUploadi
                 type="button"
                 className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-ink-600 transition hover:bg-black/8 hover:text-black"
                 onClick={() => onDelete(clip)}
-                title="Delete clip"
+                title={tr("Delete clip")}
                 disabled={readOnly}
               >
                 <Trash2 className="h-4 w-4" />

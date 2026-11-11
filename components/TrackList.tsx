@@ -1,5 +1,6 @@
 "use client";
 
+import { useRoomText } from "@/lib/i18n";
 import { LANE_HEIGHT } from "@/components/WorkstationTimeline";
 import { FormEvent, useEffect, useState } from "react";
 import { Pencil, Plus, Trash2 } from "@/components/Icons";
@@ -28,6 +29,7 @@ export function TrackList({
   onSetVolume,
   onDeleteTrack,
 }: TrackListProps) {
+  const tr = useRoomText();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState("");
   const [volumeDrafts, setVolumeDrafts] = useState<Record<string, number>>({});
@@ -52,7 +54,7 @@ export function TrackList({
     <aside className="flex min-h-0 max-h-[420px] flex-col border-r border-stone bg-canvas text-black md:max-h-none">
       <div className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-stone px-4">
         <div>
-          <p className="text-sm text-black">Tracks</p>
+          <p className="text-sm text-black">{tr("Tracks")}</p>
         </div>
         <div className="flex items-center gap-2">
           <span className="font-mono text-xs text-ink-600">
@@ -85,7 +87,7 @@ export function TrackList({
                   <form onSubmit={(event) => submitRename(event, track.id)}>
                     <input
                       autoFocus
-                      aria-label="Track name"
+                      aria-label={tr("Track name")}
                       className="h-7 w-full rounded-lg bg-white px-2 text-sm text-black shadow-ring outline-none"
                       value={draftName}
                       maxLength={36}
@@ -102,7 +104,7 @@ export function TrackList({
                 )}
                 <p className="flex items-center gap-1.5 text-xs text-ink-600">
                   {track.source === "ai" ? <span className="rounded-full bg-copilot-wash px-1.5 text-[11px] text-copilot-ink">Copilot</span> : null}
-                  <span>{clipCount} {clipCount === 1 ? "clip" : "clips"}</span>
+                  <span>{clipCount} {tr(clipCount === 1 ? "clip" : "clips")}</span>
                 </p>
               </div>
               <div className="flex shrink-0 items-center transition-opacity duration-150 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-focus-within:opacity-100 [@media(hover:hover)]:group-hover:opacity-100">
@@ -112,7 +114,7 @@ export function TrackList({
                   onClick={() => startRename(track)}
                   disabled={readOnly}
                   aria-label={`Rename ${track.name}`}
-                  title="Rename track"
+                  title={tr("Rename track")}
                 >
                   <Pencil className="h-3.5 w-3.5" />
                 </button>
@@ -122,15 +124,15 @@ export function TrackList({
                   onClick={() => onDeleteTrack(track.id)}
                   disabled={readOnly || tracks.length <= 1}
                   aria-label={`Delete ${track.name}`}
-                  title="Delete track"
+                  title={tr("Delete track")}
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
               </div>
             </div>
             <div className="flex items-center gap-1.5">
-              <button type="button" disabled={readOnly} aria-pressed={Boolean(track.muted)} onClick={() => onToggleMute(track.id)} className={`grid h-6 w-6 place-items-center rounded-full text-[11px] transition-colors disabled:opacity-35 ${track.muted ? "bg-black text-white" : "bg-stone text-black hover:bg-ink-400/40"}`} title={track.muted ? "Unmute track" : "Mute track"}>M</button>
-              <button type="button" disabled={readOnly} aria-pressed={Boolean(track.solo)} onClick={() => onToggleSolo(track.id)} className={`grid h-6 w-6 place-items-center rounded-full text-[11px] transition-colors disabled:opacity-35 ${track.solo ? "bg-black text-white" : "bg-stone text-black hover:bg-ink-400/40"}`} title={track.solo ? "Disable solo" : "Solo track"}>S</button>
+              <button type="button" disabled={readOnly} aria-pressed={Boolean(track.muted)} onClick={() => onToggleMute(track.id)} className={`grid h-6 w-6 place-items-center rounded-full text-[11px] transition-colors disabled:opacity-35 ${track.muted ? "bg-black text-white" : "bg-stone text-black hover:bg-ink-400/40"}`} title={track.muted ? tr("Unmute track") : tr("Mute track")}>M</button>
+              <button type="button" disabled={readOnly} aria-pressed={Boolean(track.solo)} onClick={() => onToggleSolo(track.id)} className={`grid h-6 w-6 place-items-center rounded-full text-[11px] transition-colors disabled:opacity-35 ${track.solo ? "bg-black text-white" : "bg-stone text-black hover:bg-ink-400/40"}`} title={track.solo ? tr("Disable solo") : tr("Solo track")}>S</button>
               <input
                 type="range"
                 min="0"
