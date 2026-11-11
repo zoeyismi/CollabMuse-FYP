@@ -21,8 +21,8 @@ export function EventActivity({ events }: EventActivityProps) {
     <section className="rounded-[28px] border border-white/14 bg-white/[0.07] p-5 shadow-[0_22px_70px_rgba(0,0,0,0.24)] backdrop-blur-2xl">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <p className="text-xs uppercase tracking-[0.28em] text-white/38">Room events</p>
-          <h2 className="mt-1 text-lg font-semibold text-white">Recent collaboration updates</h2>
+          <p className="text-xs text-white/38">Room events</p>
+          <h2 className="mt-1 text-lg font-medium text-white">Recent collaboration updates</h2>
         </div>
         <p className="max-w-md text-xs leading-5 text-white/42">
           Timeline actions are saved as room events and synchronized to other open clients.
@@ -35,7 +35,7 @@ export function EventActivity({ events }: EventActivityProps) {
           const darkText = meta.color === "#efd84c" || meta.color === "#58e081";
 
           return (
-            <div key={event.id} className="min-h-[124px] rounded-2xl border border-white/10 bg-[#071014]/55 p-4">
+            <div key={event.id} className="min-h-[124px] rounded-2xl border border-white/10 bg-black/55 p-4">
               <div className="grid grid-cols-[34px_minmax(0,1fr)] items-start gap-3">
                 <span
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full"
@@ -48,7 +48,7 @@ export function EventActivity({ events }: EventActivityProps) {
                 </span>
                 <div className="min-w-0 pt-0.5">
                   <div className="flex items-start justify-between gap-2">
-                    <p className="text-sm font-semibold text-white">{event.title}</p>
+                    <p className="text-sm font-medium text-white">{event.title}</p>
                     <span className="shrink-0 text-[10px] text-white/30">{event.time}</span>
                   </div>
                   <p className="mt-1 text-xs leading-5 text-white/45">{event.detail}</p>

@@ -160,11 +160,11 @@ export function WaveformEditor({
             }`}
           >
             <div className="absolute inset-x-3 bottom-3 h-px bg-[#efd84c]/70" />
-            <div className="absolute left-3 top-4 h-7 w-7 rounded-full bg-[#235fba]/60 blur-sm" />
+            <div className="absolute left-3 top-4 h-7 w-7 rounded-full bg-human/60 blur-sm" />
           </div>
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-white/36">Now editing</p>
-            <h2 className={`${compact ? "text-xl" : "text-2xl"} mt-1 font-semibold leading-tight text-white`}>
+            <p className="text-[10px] font-medium text-white/36">Now editing</p>
+            <h2 className={`${compact ? "text-xl" : "text-2xl"} mt-1 font-medium leading-tight text-white`}>
               Always
             </h2>
             <p className="mt-1 text-sm text-white/48">Daniel Caesar · R&B</p>
@@ -177,7 +177,7 @@ export function WaveformEditor({
               key={tool.label}
               type="button"
               aria-label={`Trigger ${tool.label} action`}
-              className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-semibold text-white/72 transition hover:border-white/18 hover:bg-white/[0.075]"
+              className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-medium text-white/72 transition hover:border-white/18 hover:bg-white/[0.075]"
               onClick={() => onSelectionAction?.(tool.label)}
             >
               <tool.icon className="h-4 w-4" style={{ color: tool.color }} />
@@ -189,7 +189,7 @@ export function WaveformEditor({
 
       <div
         ref={timelineRef}
-        className={`relative mt-5 overflow-hidden rounded-2xl border border-white/10 bg-[#071014]/62 ${
+        className={`relative mt-5 overflow-hidden rounded-2xl border border-white/10 bg-black/62 ${
           compact ? "h-[150px]" : "h-[210px]"
         }`}
       >
@@ -261,7 +261,7 @@ export function WaveformEditor({
               style={{ left: `${note.position}%` }}
             >
               <span
-                className="block h-3 w-3 rounded-full border-2 border-[#071014] shadow-[0_0_0_2px_rgba(255,255,255,0.55)]"
+                className="block h-3 w-3 rounded-full border-2 border-black shadow-[0_0_0_2px_rgba(255,255,255,0.55)]"
                 style={{ background: ["#b71912", "#235fba", "#efd84c", "#58e081"][index % 4] }}
               />
               <span className="absolute left-1/2 top-4 hidden w-48 -translate-x-1/2 rounded-xl border border-white/12 bg-[#10171b]/95 p-3 text-left text-[11px] leading-4 text-white/70 shadow-xl group-hover/note:block">

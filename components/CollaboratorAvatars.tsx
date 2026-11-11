@@ -7,9 +7,9 @@ type CollaboratorAvatarsProps = {
 
 const tones = [
   "bg-[#efd84c] text-[#11120b]",
-  "bg-[#235fba] text-white",
+  "bg-human text-white",
   "bg-[#b71912] text-white",
-  "bg-[#f4f7f4] text-[#071014]",
+  "bg-cream text-black",
 ];
 
 export function CollaboratorAvatars({ names, className }: CollaboratorAvatarsProps) {
@@ -19,7 +19,7 @@ export function CollaboratorAvatars({ names, className }: CollaboratorAvatarsPro
         <div
           key={`${name}-${index}`}
           className={cn(
-            "flex h-9 w-9 items-center justify-center rounded-full border border-white/30 text-xs font-semibold shadow-lg",
+            "flex h-9 w-9 items-center justify-center rounded-full border border-white/30 text-xs font-medium shadow-lg",
             tones[index % tones.length],
           )}
           title={name}

@@ -131,16 +131,16 @@ export function WorkstationTimeline({ readOnly = false, tracks, regions, notes, 
   const selectedClip = audioClips.find((clip) => clip.id === selected?.clipId);
 
   return (
-    <section className="workstation-timeline flex min-h-0 flex-1 flex-col bg-[#f1f0eb] text-[#151922]">
-      <div className="workstation-ruler h-14 shrink-0 border-b border-[#18202a]/10 px-4 text-[11px] text-[#18202a]/42">
-        {[1,5,9,13,17,21,25,29,33].map((bar) => <span key={bar} className="border-l border-[#18202a]/8 pl-2 pt-3">{bar}</span>)}
+    <section className="workstation-timeline flex min-h-0 flex-1 flex-col bg-cream text-[#151922]">
+      <div className="workstation-ruler h-14 shrink-0 border-b border-stone px-4 text-[11px] text-ink-600">
+        {[1,5,9,13,17,21,25,29,33].map((bar) => <span key={bar} className="border-l border-stone pl-2 pt-3">{bar}</span>)}
       </div>
       <div ref={timelineRef} className="workstation-timeline-lanes relative min-h-[420px] flex-1 cursor-crosshair overflow-y-auto overflow-x-hidden bg-[linear-gradient(90deg,rgba(25,34,46,.07)_1px,transparent_1px)] bg-[size:6.25%_100%] sm:min-h-[520px]" onPointerDown={beginPlayheadSeek} onPointerMove={dragPlayhead} onPointerUp={finishPlayheadSeek} onPointerCancel={finishPlayheadSeek}>
-        <div className="absolute bottom-0 top-0 z-30 w-px bg-[#184eb6] transition-[left] duration-300" style={{ left: `${playheadPosition}%` }}><span className="absolute -top-1 -translate-x-1/2 border-x-[7px] border-t-[9px] border-x-transparent border-t-[#184eb6]" /></div>
+        <div className="absolute bottom-0 top-0 z-30 w-px bg-human transition-[left] duration-300" style={{ left: `${playheadPosition}%` }}><span className="absolute -top-1 -translate-x-1/2 border-x-[7px] border-t-[9px] border-x-transparent border-t-[#184eb6]" /></div>
         {visibleTracks.map((track, lane) => {
           const laneRegions = draft.filter((region, index) => (region.lane ?? Math.min(index, visibleTracks.length - 1)) === lane);
           return (
-            <div key={track.id} className="relative border-b border-[#18202a]/10" style={{ height: 130 }}>
+            <div key={track.id} className="relative border-b border-stone" style={{ height: 130 }}>
               {laneRegions.map((region) => {
                 const isSelected = region.id === selectedId;
                 const clipWaveform = audioClips.find((clip) => clip.id === region.clipId)?.waveformPeaks;
@@ -168,16 +168,16 @@ export function WorkstationTimeline({ readOnly = false, tracks, regions, notes, 
             </div>
           );
         })}
-        {notes.filter((note)=>typeof note.position==="number").map((note)=><span key={note.id} className={`absolute top-2 z-40 -translate-x-1/2 rounded-full border-2 border-[#f1f0eb] ${note.resolved ? "h-2 w-2 bg-[#7f8a94] opacity-55" : "h-2.5 w-2.5 bg-[#184eb6]"}`} style={{left:`${notePosition(note, draft)}%`}} title={`${note.resolved ? "Resolved · " : ""}${note.author}: ${note.message}`} />)}
+        {notes.filter((note)=>typeof note.position==="number").map((note)=><span key={note.id} className={`absolute top-2 z-40 -translate-x-1/2 rounded-full border-2 border-cream ${note.resolved ? "h-2 w-2 bg-[#7f8a94] opacity-55" : "h-2.5 w-2.5 bg-human"}`} style={{left:`${notePosition(note, draft)}%`}} title={`${note.resolved ? "Resolved · " : ""}${note.author}: ${note.message}`} />)}
       </div>
-      <div className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-1 border-t border-[#18202a]/10 bg-[#f7f5f0] px-3 py-1.5">
-        <div className="flex flex-wrap items-center gap-1 text-xs text-[#172033]/68">
+      <div className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-1 border-t border-stone bg-cream px-3 py-1.5">
+        <div className="flex flex-wrap items-center gap-1 text-xs text-ink-700">
           <button className="workstation-tool" disabled={readOnly || !selected || selected.width < 10} onClick={()=>onSelectionAction("Split", selected?.id)} title="Split selection"><Scissors className="h-4 w-4" />Split</button>
           <button className="workstation-tool" disabled={readOnly || !selected} onClick={()=>onSelectionAction("Duplicate", selected?.id)} title="Duplicate selection"><Copy className="h-4 w-4" />Duplicate</button>
           <button className="workstation-tool" disabled={readOnly || !selected} onClick={()=>onSelectionAction("Delete", selected?.id)} title="Delete selection"><Trash2 className="h-4 w-4" />Delete</button>
-          <button className="workstation-tool text-[#123f91]" disabled={readOnly || !selectedClip} onClick={() => onUseAIContext(selected?.id)} title={selectedClip ? "Use selected audio clip as AI context" : "Select an uploaded audio clip first"}><Sparkles className="h-4 w-4" />AI context</button>
+          <button className="workstation-tool text-human-ink" disabled={readOnly || !selectedClip} onClick={() => onUseAIContext(selected?.id)} title={selectedClip ? "Use selected audio clip as AI context" : "Select an uploaded audio clip first"}><Sparkles className="h-4 w-4" />AI context</button>
         </div>
-        <p className="hidden text-[11px] text-[#172033]/42 sm:block">{selected?.label ?? "No selection"} · Session {bpm} BPM{selected && !selected.clipId ? " · Example, no audio" : selected?.clipId && !selectedClip ? " · Audio unavailable" : selectedClip?.analysis?.energy ? ` · ${selectedClip.analysis.energy} energy` : ""}</p>
+        <p className="hidden text-[11px] text-ink-600 sm:block">{selected?.label ?? "No selection"} · Session {bpm} BPM{selected && !selected.clipId ? " · Example, no audio" : selected?.clipId && !selectedClip ? " · Audio unavailable" : selectedClip?.analysis?.energy ? ` · ${selectedClip.analysis.energy} energy` : ""}</p>
       </div>
     </section>
   );

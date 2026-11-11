@@ -228,3 +228,16 @@ COLLABMUSE_TEST_URL=http://localhost:3045 COLLABMUSE_TEST_DATA_DIR=/tmp/collabmu
 ```
 
 上述测试会在指定的隔离目录创建账号、房间和音频文件，并删除测试房间中的个别音频以验证丢失场景；不会自动清理该目录。两个终端的数据目录必须一致，且绝不能指向真实项目数据。不要将真实 API 密钥写入测试命令或文档。
+
+## 2026-11-11 界面重设计（studio 风格）
+
+改动：按 Claude Design 画布“CollabMuse 介面重設計”把界面换成新的视觉系统（米白底 #fdfcfc、米色平卡 #f5f3f1、细阴影环、黑/白药丸按钮、Inter Tight 300 大标题、Geist Mono 用于音乐数据；蓝色=人写的，橙色虚线=Copilot 草稿）。
+
+- 首页 `app/page.tsx` 重写：整页按一首歌排（吸顶段落尺 Intro/Verse/Chorus/Bridge/Outro，随滚动高亮，播放头跟随滚动），编曲视图（起稿/打磨/定稿三态）、Copilot 返回声部示意、保留原有照片与 Room/Clip/Note/Sync/Mix/Version 圆环词。新文案已加入 `lib/i18n.tsx` 中英文。
+- 登录页 `components/AuthWorkspace.tsx`、仪表盘 `app/dashboard/page.tsx` 重排：统计卡与“继续”卡放在同一行同高，表格列宽固定、操作按钮右对齐，字号从 9–11px 提到 12–15px。
+- 房间工作台：顶部栏改为浅色，房间内组件的硬编码颜色统一映射到 tokens（`app/globals.css`、`tailwind.config.js`），播放/节拍器/循环/静音改为黑色药丸，留言筛选改为分段控件。
+- `GlassButton`、`GlassCard` 改为新按钮和卡片样式；字体改用 `next/font` 自托管。
+
+已验证：`npx tsc --noEmit` 通过；单元测试 96/96 通过；`npm run lint` 0 error（17 个 warning 为原有）。浏览器中查看了首页（中文，1440 宽与 375 宽，无横向溢出）、登录页（邀请态）、仪表盘、演示房间，编曲视图三个标签可切换。
+
+未验证：英文以外的其他语言首页文案（es/fr/de/ja/ko/pt 回落为英文）；仪表盘与房间内部分文案仍只有英文（原本就未接入 i18n）；房间内录音、导出、Copilot 生成流程未在新样式下逐项点测；`SphericalCarousel`、`HomepageProductReveal`、`FeatureCard`、`DashboardProjectCarousel` 已不再被页面使用，未删除。
