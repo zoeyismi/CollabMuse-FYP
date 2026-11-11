@@ -130,3 +130,47 @@ test("MIDI export has one track per part with every note", () => {
   assert.equal(Math.round(parsed.header.tempos[0].bpm), 96);
   assert.equal(parsed.tracks[score.parts.findIndex((p) => p.role === "drums")].channel, 9);
 });
+
+test("a proposal changes only its section, and accepting it applies exactly that", async () => {
+  const { createProposal, applyProposal, acceptProposal, rejectProposal, voteProposal } = await import("../lib/score.mjs");
+  const base = keepPart(draftParts(createDefaultScore(), { seed: 21 }), "part-melody");
+  const chorus = base.sections[2];
+  const withProposal = createProposal(base, { sectionId: chorus.id, author: "Franky", prompt: "lift", seed: 8, createdAt: "t" });
+  const proposal = withProposal.proposals.at(-1);
+  assert.equal(proposal.status, "open");
+  assert.equal(proposal.chords.length, chorus.bars);
+  const from = chorus.startBar * 4;
+  const to = from + chorus.bars * 4;
+  for (const part of proposal.parts) assert.ok(part.notes.every((n) => n.start >= from && n.start < to));
+
+  const accepted = acceptProposal(withProposal, proposal.id);
+  assert.equal(accepted.proposals.at(-1).status, "accepted");
+  assert.deepEqual(accepted.chords.slice(0, chorus.startBar), base.chords.slice(0, chorus.startBar));
+  assert.deepEqual(accepted.chords.slice(chorus.startBar, chorus.startBar + chorus.bars), proposal.chords);
+  for (const part of accepted.parts) {
+    const before = base.parts.find((p) => p.id === part.id);
+    const outside = (notes) => notes.filter((n) => n.start < from || n.start >= to).map((n) => n.id).sort();
+    assert.deepEqual(outside(part.notes), outside(before.notes));
+  }
+  assert.deepEqual(applyProposal(withProposal, proposal.id).chords, accepted.chords);
+
+  const rejected = rejectProposal(withProposal, proposal.id);
+  assert.equal(rejected.proposals.at(-1).status, "kept-a");
+  assert.deepEqual(rejected.chords, base.chords);
+
+  let voted = voteProposal(withProposal, proposal.id, "Ziyi", "B");
+  voted = voteProposal(voted, proposal.id, "Lina", "B");
+  voted = voteProposal(voted, proposal.id, "Ziyi", "A");
+  assert.deepEqual(voted.proposals.at(-1).votes, { A: ["Ziyi"], B: ["Lina"] });
+  voted = voteProposal(voted, proposal.id, "Ziyi", "A");
+  assert.deepEqual(voted.proposals.at(-1).votes.A, [], "voting the same side again withdraws the vote");
+});
+
+test("proposals survive sanitizeScore and bad ones are dropped", async () => {
+  const { createProposal } = await import("../lib/score.mjs");
+  const base = createProposal(draftParts(createDefaultScore(), { seed: 2 }), { sectionId: "section-2", author: "Lina", seed: 1, createdAt: "t" });
+  const clean = sanitizeScore({ ...base, proposals: [...base.proposals, { sectionId: "missing" }] });
+  assert.equal(clean.proposals.length, 1);
+  assert.deepEqual(clean.proposals[0].chords, base.proposals[0].chords);
+  assert.equal(clean.proposals[0].parts.length, base.proposals[0].parts.length);
+});

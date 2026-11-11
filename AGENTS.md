@@ -37,7 +37,7 @@ npm install --replace-registry-host=always   # the lockfile points at registry.n
 cp .env.example .env                         # optional: OPENAI_API_KEY, ELEVENLABS_API_KEY
 npm run dev                                  # node server.mjs on http://localhost:3000
 npx tsc --noEmit                             # type check
-node --test $(ls tests/*.test.mjs | grep -v server-integration)   # unit tests (106)
+node --test $(ls tests/*.test.mjs | grep -v server-integration)   # unit tests (108)
 npm run lint
 ```
 
@@ -65,7 +65,7 @@ COLLABMUSE_TEST_URL=http://localhost:3001 COLLABMUSE_TEST_DATA_DIR=<tmp dir> COL
 
 - Timeline width is computed against a fixed 120s scale, so clips on longer timelines can be drawn at the wrong length (documented in `docs/verification-status.md`; not fixed).
 - `next@15.5.6` has published security advisories. Upgrade before the final demo.
-- Composition lives in `composition.score` (see `lib/score.mjs`): sections, a chord per bar and note parts edited in the Score view. Score playback is separate from the audio timeline transport, and A/B proposals are not built yet. A cloud `composition-features` branch may overlap; compare before merging.
+- Composition lives in `composition.score` (see `lib/score.mjs`): sections, a chord per bar and note parts edited in the Score view. Kept and people-written score parts play with the main transport; A/B proposals live in `score.proposals`. WAV export does not include score parts yet (MIDI export does). A cloud `composition-features` branch may overlap; compare before merging.
 
 ## Design quick reference
 

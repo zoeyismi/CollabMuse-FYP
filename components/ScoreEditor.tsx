@@ -4,6 +4,11 @@ import { type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, use
 import { Download, Play, Square, Sparkles, Trash2 } from "lucide-react";
 import {
   DRUM_NOTES,
+  acceptProposal,
+  applyProposal,
+  createProposal,
+  rejectProposal,
+  voteProposal,
   createDefaultScore,
   diatonicChords,
   discardPart,
@@ -30,6 +35,7 @@ type Props = {
   readOnly: boolean;
   language: string;
   roomTitle: string;
+  userName: string;
   onChange: (score: Score, title: string, detail: string) => void;
 };
 
@@ -73,6 +79,17 @@ const copy = {
     selectPart: "Pick a part to edit its notes",
     ruleBased: "Copilot here is rule-based: it reads your chord track and a few words (busy, sparse, half-time, lift). No AI model or paid API is called.",
     viewOnly: "View only",
+    propose: (name: string) => `Propose a ${name} variation`,
+    proposed: (who: string, name: string) => `${who} proposed a ${name} variation`,
+    current: "A · current",
+    variation: "B · variation",
+    voteFor: (side: string, count: number) => `Vote ${side} · ${count}`,
+    acceptB: "Accept B",
+    keepA: "Keep A",
+    previewBanner: "Previewing B. Editing is paused; play it, then vote or decide.",
+    accepted: "B accepted",
+    keptA: "Kept A",
+    pickSection: "Pick a section to propose a variation",
   },
   zh: {
     emptyTitle: "用音符来写",
@@ -103,13 +120,29 @@ const copy = {
     selectPart: "选一个声部来编辑音符",
     ruleBased: "这里的 Copilot 是规则编曲器：读取和弦轨和提示里的几个词（热闹、稀疏、半拍、抬高），不调用 AI 模型或付费接口。",
     viewOnly: "只读",
+    propose: (name: string) => `为 ${name} 提一个变奏`,
+    proposed: (who: string, name: string) => `${who} 提议了 ${name} 的变奏`,
+    current: "A · 现在的",
+    variation: "B · 变奏",
+    voteFor: (side: string, count: number) => `投 ${side} · ${count}`,
+    acceptB: "采用 B",
+    keepA: "保留 A",
+    previewBanner: "正在试听 B，暂停编辑；播放后投票或决定。",
+    accepted: "已采用 B",
+    keptA: "已保留 A",
+    pickSection: "先选一个段落再提变奏",
   },
 };
 
 type Drag = { noteId: string; mode: "move" | "resize"; originX: number; originY: number; start: number; midi: number; duration: number };
 
-export function ScoreEditor({ score, bpm, readOnly, language, roomTitle, onChange }: Props) {
+export function ScoreEditor({ score: liveScore, bpm, readOnly: readOnlyProp, language, roomTitle, userName, onChange }: Props) {
   const t = language === "zh" ? copy.zh : copy.en;
+  const [previewId, setPreviewId] = useState<string | null>(null);
+  const previewing = Boolean(previewId && liveScore?.proposals?.some((item) => item.id === previewId && item.status === "open"));
+  // While B is previewed the editor shows the proposal and editing is paused.
+  const score = previewing && liveScore ? applyProposal(liveScore, previewId!) : liveScore;
+  const readOnly = readOnlyProp || previewing;
   const [newKey, setNewKey] = useState("C minor");
   const [sectionId, setSectionId] = useState<string | null>(null);
   const [partId, setPartId] = useState<string | null>(null);
@@ -290,7 +323,7 @@ export function ScoreEditor({ score, bpm, readOnly, language, roomTitle, onChang
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-canvas" onKeyDown={(event) => { if ((event.key === "Delete" || event.key === "Backspace") && selectedNoteId && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLSelectElement)) { event.preventDefault(); deleteNote(selectedNoteId); } }}>
-      <div className="flex flex-wrap items-center gap-2 border-b border-stone px-4 py-2">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-stone px-4 py-2">
         <button type="button" onClick={() => void togglePlay()} className="flex h-9 items-center gap-2 rounded-full bg-black pl-2.5 pr-3.5 text-sm text-white transition-colors hover:bg-ink-700" aria-label={playing ? t.stop : t.play}>
           {playing ? <Square className="h-3.5 w-3.5 fill-current" /> : <Play className="h-3.5 w-3.5 fill-current" />}{playing ? t.stop : t.play}
         </button>
@@ -309,7 +342,7 @@ export function ScoreEditor({ score, bpm, readOnly, language, roomTitle, onChang
       </div>
 
       <form
-        className="mx-4 mt-3 flex items-center gap-2 rounded-full bg-white py-1 pl-4 pr-1 shadow-ring"
+        className="mx-4 mt-3 flex shrink-0 items-center gap-2 rounded-full bg-white py-1 pl-4 pr-1 shadow-ring"
         onSubmit={(event) => { event.preventDefault(); if (!readOnly) runDraft(); }}
       >
         <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-copilot" aria-hidden="true" />
@@ -317,7 +350,47 @@ export function ScoreEditor({ score, bpm, readOnly, language, roomTitle, onChang
         <input id="score-prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={t.promptPlaceholder} disabled={readOnly} className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-ink-400" />
         <button type="submit" disabled={readOnly} className="flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-black px-3 text-[13px] text-white transition-colors hover:bg-ink-700 disabled:opacity-40"><Sparkles className="h-3.5 w-3.5" />{section ? t.draftSection(section.name) : t.draft}</button>
       </form>
-      <p className="mx-4 mt-1.5 text-xs text-ink-600">{readOnly ? t.viewOnly : t.ruleBased}</p>
+      <div className="mx-4 mt-1.5 flex shrink-0 flex-wrap items-center justify-between gap-2">
+        <p className="text-xs text-ink-600">{previewing ? t.previewBanner : readOnly ? t.viewOnly : t.ruleBased}</p>
+        {!readOnlyProp && !previewing ? (
+          <button type="button" disabled={!section} title={section ? undefined : t.pickSection} onClick={() => { if (!liveScore || !section) return; const next = createProposal(liveScore, { sectionId: section.id, author: userName, prompt }); onChange(next, `${userName} proposed a ${section.name} variation`, next.proposals?.at(-1)?.note || section.name); }} className="flex h-8 items-center gap-1.5 rounded-full bg-white px-3 text-[13px] shadow-ring transition-colors hover:bg-cream disabled:opacity-40">
+            {section ? t.propose(section.name) : t.pickSection}
+          </button>
+        ) : null}
+      </div>
+      {liveScore?.proposals?.some((item) => item.status === "open") ? (
+        <div className="mx-4 mt-3 flex shrink-0 gap-2 overflow-x-auto pb-1">
+          {liveScore.proposals.filter((item) => item.status === "open").map((proposal) => {
+            const target = liveScore.sections.find((item) => item.id === proposal.sectionId);
+            const showingB = previewId === proposal.id;
+            const myVote = proposal.votes.A.includes(userName) ? "A" : proposal.votes.B.includes(userName) ? "B" : null;
+            return (
+              <article key={proposal.id} className="flex w-[340px] shrink-0 flex-col gap-2.5 rounded-2xl bg-cream p-3">
+                <p className="text-[13px]"><span className="font-medium">{t.proposed(proposal.author, target?.name ?? "")}</span>{proposal.note ? <span className="block truncate font-mono text-xs text-ink-600" title={proposal.note}>{proposal.note}</span> : null}</p>
+                <div role="group" aria-label="A or B" className="grid grid-cols-2 gap-0.5 rounded-full bg-black/5 p-[3px]">
+                  {(["A", "B"] as const).map((side) => {
+                    const on = side === "B" ? showingB : !showingB;
+                    return <button key={side} type="button" aria-pressed={on} onClick={() => { stopScore(); setPlaying(false); setBeat(null); setSectionId(proposal.sectionId); setPreviewId(side === "B" ? proposal.id : null); }} className={cn("h-8 rounded-full text-[13px] transition-[background-color,box-shadow]", on ? "bg-white shadow-ring" : "text-ink-700")}>{side === "A" ? t.current : t.variation}</button>;
+                  })}
+                </div>
+                {!readOnlyProp ? (
+                  <>
+                    <div className="flex gap-1.5">
+                      {(["A", "B"] as const).map((side) => (
+                        <button key={side} type="button" aria-pressed={myVote === side} title={proposal.votes[side].join(", ") || undefined} onClick={() => onChange(voteProposal(liveScore, proposal.id, userName, side), `${userName} voted ${side}`, target?.name ?? "")} className={cn("h-7 flex-1 rounded-full text-xs transition-colors", myVote === side ? "bg-human-ink text-white" : "bg-white text-black hover:bg-stone")}>{t.voteFor(side, proposal.votes[side].length)}</button>
+                      ))}
+                    </div>
+                    <div className="flex gap-1.5">
+                      <button type="button" onClick={() => { setPreviewId(null); onChange(acceptProposal(liveScore, proposal.id), `Accepted ${target?.name ?? ""} variation B`, proposal.note || ""); }} className="h-8 flex-1 rounded-full bg-black text-[13px] text-white transition-colors hover:bg-ink-700">{t.acceptB}</button>
+                      <button type="button" onClick={() => { setPreviewId(null); onChange(rejectProposal(liveScore, proposal.id), `Kept ${target?.name ?? ""} as A`, ""); }} className="h-8 rounded-full bg-white px-3 text-[13px] shadow-ring transition-colors hover:bg-cream">{t.keepA}</button>
+                    </div>
+                  </>
+                ) : null}
+              </article>
+            );
+          })}
+        </div>
+      ) : null}
 
       <div className="mt-3 grid shrink-0 grid-cols-[208px_minmax(0,1fr)] border-y border-stone">
         <div className="flex h-8 items-center border-b border-r border-stone px-3 text-xs text-ink-600">{t.sections}</div>
