@@ -245,3 +245,16 @@ COLLABMUSE_TEST_URL=http://localhost:3045 COLLABMUSE_TEST_DATA_DIR=/tmp/collabmu
 未验证：导出 WAV 与下载备份（会下载文件，未执行）；录音（需要麦克风）；英文以外的其他语言首页文案（es/fr/de/ja/ko/pt 回落为英文）；仪表盘与房间内部分文案仍只有英文（原本就未接入 i18n）；房间内录音、导出、Copilot 生成流程未在新样式下逐项点测；`SphericalCarousel`、`HomepageProductReveal`、`FeatureCard`、`DashboardProjectCarousel` 已不再被页面使用，未删除。
 
 补充（同日，房间内页布局）：按画布 Workstation 板重排房间内页。工具栏改为分组药丸（播放组、BPM/拍号/吸附、节拍器与循环、右侧录音/导入/导出）；播放与暂停合并为一个按钮。修复两处对齐问题：音轨表头（约 80px）与时间线轨道（130px）高度不一致，现统一为 96px（`LANE_HEIGHT`），两侧滚动同步；时间线背景网格每 6.25% 一条，与 1–33 小节标尺（每 4 小节一格）不对齐，现改为每 4 小节一条主线、每小节一条细线。右侧面板标签改为分段控件并把助手放在第一位，Copilot 面板改为提示框样式。在 1440 与 1024 宽下重新走通：播放/暂停、Copilot 生成并加入工作台（新音轨与轨道对齐）、留言、保存版本。未验证：导出 WAV、录音；作曲功能（段落、和弦轨、钢琴卷帘、A/B 提案）仍等待 composition-features 分支。
+
+## 2026-11-11 作曲视图（音符、和弦、钢琴卷帘）
+
+改动：房间里新增“作曲 · 音符”视图（和“编曲 · 音频”切换）。乐谱数据放在原有 `composition.score` 里，沿用原来的 `room:composition` 同步、版本保存/恢复和 arrangementEpoch 冲突检查；服务器用 `lib/score.mjs` 的 `sanitizeScore` 校验后才保存。
+- 段落（默认 16 小节：Intro/Verse/Chorus/Bridge）、每小节一个和弦（点击换成调内和弦）、调式切换。
+- 声部：人写的（蓝）和 Copilot 草稿（橙色虚线，可“保留/丢弃”）。钢琴卷帘可点击加音符、拖动移动、拖右边缘拉长、双击或 Delete 删除。
+- Copilot 起草：规则编曲器按和弦轨写鼓、贝斯、键盘、旋律，读取提示里的几个词（busy/sparse/half-time/lift 及中文对应词）；可只重写某一段；已保留的声部不会被改写。不调用 AI 模型或付费接口。
+- 播放用 Tone.js 合成器（不下载采样），导出 MIDI 用 @tonejs/midi，和弦与调用 Tonal。新增依赖：tone、tonal、@tonejs/midi（均为 MIT）。
+
+已验证：新增 `tests/score.test.mjs` 10 项（和弦跟随、只重写一段、保留不被改写、校验、MIDI 往返等），全部单元测试 106 项通过；`tsc` 通过。浏览器（隔离数据目录）中：开始乐谱 → Copilot 起草 4 个声部 → 选旋律、切到副歌、保留、添加音符 → 把第 9 小节改成 Fm → 用“less busy, half-time drums”重写副歌 → 播放副歌（播放头移动）；刷新后服务器数据一致；两个窗口打开同一房间，一边改和弦另一边实时更新。
+
+未验证：实际听感（浏览器面板未出声检查）；导出 MIDI 按钮的下载（逻辑由单元测试覆盖）；乐谱与音频时间线同时播放（目前分开播放）；多人同时拖同一个音符时的冲突表现。
+

@@ -13,6 +13,8 @@ import { MusicAgentPanel } from "@/components/MusicAgentPanel";
 import { TrackList } from "@/components/TrackList";
 import { WorkstationInspector } from "@/components/WorkstationInspector";
 import { WorkstationTimeline } from "@/components/WorkstationTimeline";
+import { ScoreEditor } from "@/components/ScoreEditor";
+import type { Score } from "@/lib/score.mjs";
 import { availableRegionDuration, canEditRegionTiming } from "@/lib/clip-source";
 import { isLoopbackHostname } from "@/lib/local-share";
 import { requestVersionChange } from "@/lib/version-request";
@@ -319,6 +321,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   const [timelineRedoStack, setTimelineRedoStack] = useState<TimelineHistoryEntry[]>([]);
   const [tracks, setTracks] = useState<Track[]>(roomId === "demo" ? initialTracks : []);
   const [composition, setComposition] = useState<MusicComposition | null>(null);
+  const [workspaceView, setWorkspaceView] = useState<"arrangement" | "score">("arrangement");
   const [audioClips, setAudioClips] = useState<AudioClip[]>([]);
   const [versions, setVersions] = useState<RoomVersion[]>([]);
   const [versionOperationPending, setVersionOperationPending] = useState(false);
@@ -985,6 +988,26 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
       return;
     }
 
+    void persistRoomChanges(
+      { url: `/api/rooms/${encodeURIComponent(roomId)}`, init: { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ composition: nextComposition, arrangementEpoch: arrangementEpochRef.current }) } },
+      { url: `/api/rooms/${encodeURIComponent(roomId)}/events`, init: { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event }) } },
+    );
+  };
+
+  const handleScoreChange = (nextScore: Score, title: string, detail: string) => {
+    if (rejectViewerEdit()) return;
+    const base: MusicComposition = composition ?? { id: `composition-${Date.now()}`, title: "Score", key: nextScore.key, tempo: bpm, style: "", explanation: "", notes: [], provider: "local" };
+    const nextComposition: MusicComposition = { ...base, key: nextScore.key, score: nextScore };
+    const event = createEvent(/copilot/i.test(title) ? "remix" : "move", title, `${currentUserName} · ${detail}`);
+    setComposition(nextComposition);
+    prependEvent(event);
+    if (socketRef.current?.connected) {
+      pendingEditsRef.current.add(`composition:${event.id}`);
+      setEditSaveState("saving");
+      socketRef.current.emit("room:composition", { roomId, arrangementEpoch: arrangementEpochRef.current, composition: nextComposition, event });
+      setSyncStatus("Saving score");
+      return;
+    }
     void persistRoomChanges(
       { url: `/api/rooms/${encodeURIComponent(roomId)}`, init: { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ composition: nextComposition, arrangementEpoch: arrangementEpochRef.current }) } },
       { url: `/api/rooms/${encodeURIComponent(roomId)}/events`, init: { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event }) } },
@@ -1728,9 +1751,23 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
         {isAccessLoading ? <div className="shrink-0 bg-cream px-4 py-1.5 text-center text-[11px] font-medium text-human-ink" role="status">{language === "zh" ? "正在检查房间权限……" : "Checking room access..."}</div> : connectionState !== "online" ? <div className="shrink-0 bg-copilot-wash px-4 py-1.5 text-center text-[11px] font-medium text-copilot-ink" role="status">{roomConnectionMessage(connectionState, language)}</div> : !canEdit ? <div className="shrink-0 bg-human-wash px-4 py-1.5 text-center text-[11px] font-medium text-human-ink">{language === "zh" ? "只读权限：可以播放、浏览和导出，但不能编辑。" : "View-only access: playback, navigation and export are available. Editing is locked."}</div> : null}
         <ControlPanel readOnly={!canEdit} uploadedFileName={uploadedFileName} uploadedAudioUrl={uploadedAudioUrl} referenceMuted={referenceMuted} onReferenceMuteChange={handleReferenceMute} onAudioUpload={handleUpload} onRecordedClip={handleClipUpload} onRecordingAtRiskChange={setHasRecordingAtRisk} roomId={roomId} tracks={tracks} regions={timelineRegions} audioClips={audioClips} onPlayheadChange={setPlayheadPosition} snapMode={snapMode} onSnapModeChange={setSnapMode} seekRequest={seekRequest} transportCommand={transportCommand} onTransportAction={handleTransportAction} bpm={bpm} timeSignature={timeSignature} onSessionSettingsChange={handleSessionSettingsChange} />
 
-        <div className="workstation-grid grid min-h-0 flex-1 md:grid-cols-[180px_minmax(0,1fr)_264px] xl:grid-cols-[220px_minmax(0,1fr)_340px]">
+        <div className="flex h-11 shrink-0 items-center gap-3 border-b border-stone px-4">
+          <div role="tablist" aria-label={language === "zh" ? "工作区视图" : "Workspace view"} className="flex gap-0.5 rounded-full bg-cream p-[3px]">
+            {([["arrangement", language === "zh" ? "编曲 · 音频" : "Arrangement · audio"], ["score", language === "zh" ? "作曲 · 音符" : "Score · notes"]] as const).map(([view, label]) => (
+              <button key={view} type="button" role="tab" aria-selected={workspaceView === view} onClick={() => setWorkspaceView(view)} className={`flex h-7 items-center gap-1.5 rounded-full px-3 text-[13px] transition-[background-color,box-shadow,color] duration-150 ease-studio ${workspaceView === view ? "bg-white text-black shadow-ring" : "text-ink-700 hover:text-black"}`}>{label}</button>
+            ))}
+          </div>
+          <span className="truncate text-xs text-ink-600">{workspaceView === "score" ? (composition?.score ? `${composition.score.key} · ${composition.score.bars} ${language === "zh" ? "小节" : "bars"} · ${composition.score.parts.length} ${language === "zh" ? "个声部" : "parts"}` : (language === "zh" ? "还没有乐谱" : "No score yet")) : `${tracks.length} ${language === "zh" ? "条音轨" : "tracks"} · ${timelineRegions.length} ${language === "zh" ? "个片段" : "regions"}`}</span>
+        </div>
+        <div className={`workstation-grid grid min-h-0 flex-1 ${workspaceView === "score" ? "md:grid-cols-[minmax(0,1fr)_264px] xl:grid-cols-[minmax(0,1fr)_340px]" : "md:grid-cols-[180px_minmax(0,1fr)_264px] xl:grid-cols-[220px_minmax(0,1fr)_340px]"}`}>
+          {workspaceView === "score" ? (
+            <ScoreEditor score={composition?.score ?? null} bpm={bpm} readOnly={!canEdit} language={language} roomTitle={roomTitle} onChange={handleScoreChange} />
+          ) : (
+            <>
           <TrackList readOnly={!canEdit} tracks={tracks} regions={timelineRegions} onAddTrack={handleAddTrack} onRenameTrack={handleRenameTrack} onToggleMute={handleToggleMute} onToggleSolo={handleToggleSolo} onSetVolume={handleSetTrackVolume} onDeleteTrack={handleDeleteTrack} />
-          <WorkstationTimeline readOnly={!canEdit} tracks={tracks} regions={timelineRegions} notes={notes} uploadedFileName={uploadedFileName} waveformPeaks={waveformPeaks} audioClips={audioClips} bpm={bpm} playheadPosition={playheadPosition} onSelectionAction={handleSelectionAction} onUseAIContext={handleTimelineAIContext} onRegionsChange={handleRegionsChange} snapMode={snapMode} onSelectionChange={setSelectedRegionId} onPlayheadSeek={(position) => { setPlayheadPosition(position); setSeekRequest((current) => ({ id: (current?.id ?? 0) + 1, position })); }} />
+            <WorkstationTimeline readOnly={!canEdit} tracks={tracks} regions={timelineRegions} notes={notes} uploadedFileName={uploadedFileName} waveformPeaks={waveformPeaks} audioClips={audioClips} bpm={bpm} playheadPosition={playheadPosition} onSelectionAction={handleSelectionAction} onUseAIContext={handleTimelineAIContext} onRegionsChange={handleRegionsChange} snapMode={snapMode} onSelectionChange={setSelectedRegionId} onPlayheadSeek={(position) => { setPlayheadPosition(position); setSeekRequest((current) => ({ id: (current?.id ?? 0) + 1, position })); }} />
+            </>
+          )}
           <WorkstationInspector readOnly={!canEdit} roomId={roomId} notes={notes} events={events} copilot={copilotPanel} openCopilotRequest={openCopilotRequest} regions={timelineRegions} selectedRegion={timelineRegions.find((region) => region.id === selectedRegionId)} onSendNote={handleSendNote} onReplyToNote={handleReplyToNote} onDraftPresenceChange={setHasUnsavedNoteDraft} onResolveNote={handleResolveNote} onDeleteNote={handleDeleteNote} onSelectNote={(position) => { setPlayheadPosition(position); setSeekRequest((current) => ({ id: (current?.id ?? 0) + 1, position })); setSyncStatus(`Jumped to note at ${Math.round(position)}%`); }} versions={versions} versionOperationPending={versionOperationPending} onCreateVersion={handleCreateVersion} onRestoreVersion={handleRestoreVersion} />
         </div>
 

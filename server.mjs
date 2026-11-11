@@ -20,6 +20,7 @@ import { readJsonRequest } from "./lib/json-request.mjs";
 import { readBinaryRequest } from "./lib/binary-request.mjs";
 import { validateTimingPatch } from "./lib/session-timing.mjs";
 import { referenceTempo } from "./lib/reference-tempo.mjs";
+import { sanitizeScore } from "./lib/score.mjs";
 
 const dev = process.env.NODE_ENV !== "production";
 const hostname = process.env.HOSTNAME_BIND || "0.0.0.0";
@@ -54,6 +55,14 @@ const renderLocalMusicAsync = createMusicWorkerRunner({
   createWorker: (input) => new Worker(new URL("./lib/local-music-worker.mjs", import.meta.url), { workerData: input }),
 });
 const sessionMaxAgeSeconds = 60 * 60 * 24 * 14;
+
+/** Composition data from a client: the legacy melody plus an optional note score, which is validated here. */
+function cleanComposition(composition) {
+  if (!composition || typeof composition !== "object" || !Array.isArray(composition.notes)) return null;
+  if (composition.score === undefined || composition.score === null) return composition;
+  const score = sanitizeScore(composition.score);
+  return score ? { ...composition, score } : null;
+}
 const compositionPitches = [
   "C3", "C#3", "D3", "D#3", "E3", "F3", "F#3", "G3", "G#3", "A3", "A#3", "B3",
   "C4", "C#4", "D4", "D#4", "E4", "F4", "F#4", "G4", "G#4", "A4", "A#4", "B4",
@@ -1821,6 +1830,14 @@ async function handleApi(req, res, pathname) {
       return true;
     }
     validateTimingPatch(body);
+    if (Object.hasOwn(body, "composition") && body.composition !== null) {
+      const composition = cleanComposition(body.composition);
+      if (!composition) {
+        sendJson(res, 400, { error: "Those composition changes were not valid." });
+        return true;
+      }
+      body.composition = composition;
+    }
     const room = await ensureRoom(roomMatch[1], (current) => {
       if (["composition", "bpm", "timeSignature"].some((key) => Object.hasOwn(body, key))) assertArrangementEpoch(current, body.arrangementEpoch);
       const { arrangementEpoch: _epoch, ...patch } = body;
@@ -2106,15 +2123,19 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("room:composition", ({ roomId = "demo", composition, event, arrangementEpoch }) => {
-    if (!composition || !Array.isArray(composition.notes)) return;
+  socket.on("room:composition", ({ roomId = "demo", composition: rawComposition, event, arrangementEpoch }) => {
+    const composition = cleanComposition(rawComposition);
+    if (!composition) {
+      socket.emit("room:sync-error", { message: "Those composition changes were not valid and were not saved." });
+      return;
+    }
     void queueRoomEdit(roomId, async () => {
       try {
         if (!(await mayEdit(roomId))) throw new Error("Editing access is no longer available");
         const room = await ensureRoom(roomId, (current) => { assertArrangementEpoch(current, arrangementEpoch); return { composition, ...(event ? { events: eventsWithEvent(current.events ?? [], event) } : {}) }; });
         io.to(roomId).emit("room:composition", { arrangementEpoch: room.arrangementEpoch ?? 0, composition: room.composition, event });
       } catch (error) {
-        socket.emit("room:sync-error", { message: error.statusCode === 409 ? error.message : "Could not save melody changes. Reloading the saved room." });
+        socket.emit("room:sync-error", { message: error.statusCode === 409 ? error.message : "Could not save composition changes. Reloading the saved room." });
       }
     });
   });
