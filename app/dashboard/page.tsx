@@ -432,7 +432,7 @@ export default function DashboardPage() {
         </aside>
 
         <section className="min-w-0">
-          <header className="sticky top-0 z-20 flex h-16 items-center justify-between gap-4 bg-canvas/90 px-5 backdrop-blur-md sm:px-8">
+          <header className="sticky top-0 z-20 flex h-16 items-center justify-between gap-4 bg-canvas px-5 sm:px-8">
             <p className="truncate text-sm text-ink-600">Rooms <span aria-hidden="true">/</span> <span className="text-black">{currentFilter}</span></p>
             <label className="flex h-9 w-[min(340px,55vw)] items-center gap-2 rounded-full bg-cream px-3.5 text-ink-600 focus-within:outline focus-within:outline-[1.5px] focus-within:outline-offset-2 focus-within:outline-[#2b7fff]">
               <Search className="h-4 w-4 shrink-0" aria-hidden="true" />

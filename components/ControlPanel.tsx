@@ -54,6 +54,7 @@ export function ControlPanel({ readOnly = false, uploadedFileName, uploadedAudio
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const clipAudioRefs = useRef(new Map<string, HTMLAudioElement>());
   const clipTimersRef = useRef<number[]>([]);
+  const lastPlayheadReportRef = useRef(0);
   const animationFrameRef = useRef<number | null>(null);
   const playbackGenerationRef = useRef(0);
   const clockOriginRef = useRef(0);
@@ -315,7 +316,11 @@ export function ControlPanel({ readOnly = false, uploadedFileName, uploadedAudio
         if (generation !== playbackGenerationRef.current) return;
         const nextTime = Math.min(timelineDuration, Math.max(0, (now - clockOriginRef.current) / 1000));
         setCurrentTime(nextTime);
-        onPlayheadChange?.((nextTime / timelineDuration) * 100);
+        // The whole room re-renders on a playhead change, so report it about ten times a second, not every frame.
+        if (now - lastPlayheadReportRef.current >= 100 || nextTime >= timelineDuration) {
+          lastPlayheadReportRef.current = now;
+          onPlayheadChange?.((nextTime / timelineDuration) * 100);
+        }
         const loop = loopSettingsRef.current;
         const restartAt = getLoopRestartTime(nextTime, timelineDuration, loop.enabled, loop.start, loop.end);
         if (restartAt !== null) {

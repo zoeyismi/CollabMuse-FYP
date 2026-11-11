@@ -139,7 +139,7 @@ export function WorkstationTimeline({ readOnly = false, tracks, regions, notes, 
         {[1,5,9,13,17,21,25,29,33].map((bar) => <span key={bar} className="flex items-end border-l border-stone pb-2 pl-1.5">{bar}</span>)}
       </div>
       <div ref={timelineRef} id="timeline-lanes-scroll" onScroll={(event) => { const list = document.getElementById("track-list-scroll"); if (list && list.scrollTop !== event.currentTarget.scrollTop) list.scrollTop = event.currentTarget.scrollTop; }} className="workstation-timeline-lanes timeline-bars relative min-h-[420px] flex-1 cursor-crosshair overflow-y-auto overflow-x-hidden sm:min-h-[520px]" onPointerDown={beginPlayheadSeek} onPointerMove={dragPlayhead} onPointerUp={finishPlayheadSeek} onPointerCancel={finishPlayheadSeek}>
-        <div className="absolute bottom-0 top-0 z-30 w-[1.5px] bg-black transition-[left] duration-300 ease-studio" style={{ left: `${playheadPosition}%` }}><span className="absolute -top-0.5 left-[0.75px] h-2.5 w-2.5 -translate-x-1/2 rounded-full bg-black" /></div>
+        <div className="absolute bottom-0 top-0 z-30 w-[1.5px] bg-black transition-[left] duration-100 ease-linear will-change-[left]" style={{ left: `${playheadPosition}%` }}><span className="absolute -top-0.5 left-[0.75px] h-2.5 w-2.5 -translate-x-1/2 rounded-full bg-black" /></div>
         {visibleTracks.map((track, lane) => {
           const laneRegions = draft.filter((region, index) => (region.lane ?? Math.min(index, visibleTracks.length - 1)) === lane);
           return (

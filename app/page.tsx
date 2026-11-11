@@ -114,10 +114,42 @@ function SectionHeading({ id, title, children }: { id: SectionId; title: string;
   );
 }
 
-function SongRuler({ current, progress }: { current: SectionId; progress: number }) {
+function SongRuler() {
   const { t } = useLanguage();
+  const [current, setCurrent] = useState<SectionId>("intro");
+  const playheadRef = useRef<HTMLDivElement>(null);
+
+  // Scroll updates the playhead through the DOM; React only re-renders this ruler when the section changes.
+  useEffect(() => {
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      const max = document.documentElement.scrollHeight - window.innerHeight;
+      const progress = max > 0 ? Math.min(1, Math.max(0, window.scrollY / max)) : 0;
+      if (playheadRef.current) playheadRef.current.style.transform = `translateX(${progress * 100}cqw)`;
+      const marker = window.innerHeight * 0.35;
+      let next: SectionId = "intro";
+      for (const section of SECTIONS) {
+        const element = document.getElementById(section.id);
+        if (element && element.getBoundingClientRect().top <= marker) next = section.id;
+      }
+      setCurrent(next);
+    };
+    const onScroll = () => {
+      if (!frame) frame = window.requestAnimationFrame(update);
+    };
+    update();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, []);
+
   return (
-    <div className="sticky top-0 z-30 bg-canvas/90 backdrop-blur-md">
+    <div className="sticky top-0 z-30 bg-canvas">
       <div className="mx-auto max-w-[1280px] px-5 pb-3 pt-2 sm:px-8">
         <ol aria-label={t("home.ruler")} className="grid gap-[3px]" style={{ gridTemplateColumns: SECTIONS.map((section) => `${section.span}fr`).join(" ") }}>
           {SECTIONS.map((section) => {
@@ -139,47 +171,13 @@ function SongRuler({ current, progress }: { current: SectionId; progress: number
             );
           })}
         </ol>
-        <div aria-hidden="true" className="relative mt-1 h-1.5">
+        <div aria-hidden="true" className="relative mt-1 h-1.5 [container-type:inline-size]">
           <div className="bar-ticks absolute inset-0 opacity-60" />
-          <div className="absolute -top-0.5 bottom-[-2px] w-[1.5px] bg-black" style={{ left: `${progress * 100}%` }} />
+          <div ref={playheadRef} className="absolute -top-0.5 bottom-[-2px] left-0 w-[1.5px] bg-black will-change-transform" />
         </div>
       </div>
     </div>
   );
-}
-
-function useSongPosition() {
-  const [current, setCurrent] = useState<SectionId>("intro");
-  const [progress, setProgress] = useState(0);
-  const frame = useRef(0);
-
-  useEffect(() => {
-    const update = () => {
-      frame.current = 0;
-      const max = document.documentElement.scrollHeight - window.innerHeight;
-      setProgress(max > 0 ? Math.min(1, Math.max(0, window.scrollY / max)) : 0);
-      const marker = window.innerHeight * 0.35;
-      let next: SectionId = "intro";
-      for (const section of SECTIONS) {
-        const element = document.getElementById(section.id);
-        if (element && element.getBoundingClientRect().top <= marker) next = section.id;
-      }
-      setCurrent(next);
-    };
-    const onScroll = () => {
-      if (!frame.current) frame.current = window.requestAnimationFrame(update);
-    };
-    update();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("resize", onScroll);
-    return () => {
-      window.removeEventListener("scroll", onScroll);
-      window.removeEventListener("resize", onScroll);
-      if (frame.current) window.cancelAnimationFrame(frame.current);
-    };
-  }, []);
-
-  return { current, progress };
 }
 
 function Arrangement() {
@@ -255,12 +253,11 @@ function Arrangement() {
 
 export default function Home() {
   const { t, language } = useLanguage();
-  const { current, progress } = useSongPosition();
 
   return (
     <main className="bg-canvas text-black">
       <Navbar />
-      <SongRuler current={current} progress={progress} />
+      <SongRuler />
 
       <header id="intro" className="mx-auto grid max-w-[1280px] items-center gap-12 px-5 pb-24 pt-14 sm:px-8 lg:grid-cols-[minmax(0,1fr)_440px] lg:gap-16 lg:pt-20">
         <div className="flex flex-col gap-7">
