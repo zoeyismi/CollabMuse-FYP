@@ -153,19 +153,19 @@ export function MusicAgentPanel({
   };
 
   const fieldClass = compact
-    ? "rounded-[8px] border border-stone bg-white/58 px-3 py-2 text-xs text-black outline-none focus:border-human/45"
+    ? "h-9 rounded-full bg-white px-3 text-[13px] text-black shadow-ring outline-none focus-visible:outline focus-visible:outline-[1.5px] focus-visible:outline-offset-2 focus-visible:outline-[#2b7fff]"
     : "rounded-[8px] border border-white/12 bg-black/20 px-3 py-2 text-xs text-white outline-none focus:border-[#efd84c]/45";
 
   return (
     <section className={compact ? "text-black" : "rounded-[12px] border border-white/12 bg-white/[0.055] p-5 text-white backdrop-blur-2xl"}>
       <form onSubmit={generateMusic}>
         <div className="flex items-start gap-3">
-          <span className={`grid h-10 w-10 shrink-0 place-items-center rounded-full ${compact ? "bg-human/10 text-human" : "bg-[#efd84c]/10 text-[#efd84c]"}`}>
+          {!compact ? <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#efd84c]/10 text-[#efd84c]">
             <BotMessageSquare className="h-4 w-4" />
-          </span>
+          </span> : null}
           <div className="min-w-0">
-            <p className={compact ? "text-[11px] text-ink-600" : "text-xs text-white/38"}>{t("music.title")}</p>
-            <h2 className={`mt-1 text-base font-medium ${compact ? "text-black" : "text-white"}`}>{t("music.heading")}</h2>
+            {!compact ? <p className="text-xs text-white/38">{t("music.title")}</p> : null}
+            <h2 className={compact ? "font-display text-2xl font-light leading-tight tracking-[-0.02em] text-black" : "mt-1 text-base font-medium text-white"}>{t("music.heading")}</h2>
             <p className={`mt-1 text-xs leading-5 ${compact ? "text-ink-600" : "text-white/48"}`}>
               {t(provider === "collabmuse" ? "music.builtinDescription" : "music.externalDescription")}
             </p>
@@ -173,10 +173,11 @@ export function MusicAgentPanel({
           </div>
         </div>
 
-        <label className={`mt-4 block text-[10px] font-medium ${compact ? "text-ink-600" : "text-white/45"}`}>
+        <div className={compact ? "mt-4 flex flex-col gap-1 rounded-[24px] bg-white p-2 shadow-ring" : ""}>
+        <label className={compact ? "block px-2 pt-1 text-[13px] text-black/50" : "mt-4 block text-[10px] font-medium text-white/45"}>
           {t("music.describe")}
           <textarea
-            className={`mt-1.5 min-h-28 w-full resize-none px-4 py-3 text-sm font-normal normal-case leading-6 tracking-normal ${fieldClass}`}
+            className={compact ? "mt-1 block min-h-24 w-full resize-none bg-transparent text-sm leading-6 text-black outline-none" : `mt-1.5 min-h-28 w-full resize-none px-4 py-3 text-sm font-normal normal-case leading-6 tracking-normal ${fieldClass}`}
             value={prompt}
             maxLength={3500}
             disabled={readOnly || isGenerating}
@@ -199,41 +200,42 @@ export function MusicAgentPanel({
         <button
           type="submit"
           disabled={readOnly || isGenerating || isAddingToRoom || prompt.trim().length < 8}
-          className="mt-3 inline-flex h-10 w-full items-center justify-center gap-2 rounded-full bg-black px-5 text-sm text-white transition-colors hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-45"
+          className={compact ? "inline-flex h-9 items-center justify-center gap-2 self-end rounded-full bg-black px-3.5 text-sm text-white transition-colors hover:bg-ink-700 disabled:cursor-not-allowed disabled:bg-ink-400" : "mt-3 inline-flex h-10 w-full items-center justify-center gap-2 rounded-full bg-black px-5 text-sm text-white transition-colors hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-45"}
         >
           <Sparkles className="h-4 w-4" />
           {t(isGenerating ? "music.generating" : "music.generate")}
         </button>
+        </div>
 
         <p role="status" className={`mt-2 text-xs ${error ? "text-[#a92f2a]" : compact ? "text-ink-600" : "text-white/42"}`}>{error ? `${musicErrorMessage(error, language)} ${displayedStatus}` : displayedStatus}</p>
 
-        <details className={`mt-3 rounded-[8px] border ${compact ? "border-stone bg-white/38" : "border-white/10 bg-black/10"}`}>
-          <summary className={`cursor-pointer list-none px-3 py-2.5 text-xs font-medium ${compact ? "text-ink-700" : "text-white/62"}`}>
+        <details className={`mt-3 rounded-2xl ${compact ? "bg-cream" : "border border-white/10 bg-black/10"}`}>
+          <summary className={`cursor-pointer list-none px-4 py-3 text-[13px] ${compact ? "text-black" : "text-white/62"}`}>
             {t("music.settings")}
           </summary>
-          <div className="grid grid-cols-2 gap-2 border-t border-stone p-3">
+          <div className="grid grid-cols-2 gap-2 px-3 pb-3">
           <label className="col-span-2 text-[10px] text-ink-600">{t("music.engine")}
             <select disabled={readOnly || isGenerating} className={`mt-1 w-full ${fieldClass}`} value={provider} onChange={(event) => setProvider(event.target.value as "collabmuse" | "elevenlabs")}>
               <option value="collabmuse">{t("music.builtin")}</option>
               <option value="elevenlabs">{t("music.paid")}</option>
             </select>
           </label>
-          <label className="text-[10px] text-ink-600">{t("music.style")}
+          <label className="text-xs text-ink-600">{t("music.style")}
             <select disabled={readOnly || isGenerating} className={`mt-1 w-full ${fieldClass}`} value={style} onChange={(event) => setStyle(event.target.value)}>
               {([['R&B', 'R&B'], ['Pop', '流行'], ['Lo-fi', 'Lo-fi'], ['Electronic', '电子'], ['Ambient', '氛围'], ['Cinematic', '电影配乐'], ['Jazz', '爵士'], ['Hip-hop', '嘻哈']] as const).map(([value, zh]) => <option key={value} value={value}>{isChinese ? zh : value}</option>)}
             </select>
           </label>
-          <label className="text-[10px] text-ink-600">{t("music.mood")}
+          <label className="text-xs text-ink-600">{t("music.mood")}
             <select disabled={readOnly || isGenerating} className={`mt-1 w-full ${fieldClass}`} value={mood} onChange={(event) => setMood(event.target.value)}>
               {([['warm', '温暖'], ['dreamy', '梦幻'], ['bright', '明亮'], ['moody', '忧郁'], ['energetic', '充满活力'], ['cinematic', '电影感'], ['intimate', '亲密']] as const).map(([value, zh]) => <option key={value} value={value}>{isChinese ? zh : value}</option>)}
             </select>
           </label>
-          <label className="text-[10px] text-ink-600">{t("music.key")}
+          <label className="text-xs text-ink-600">{t("music.key")}
             <select disabled={readOnly || isGenerating} className={`mt-1 w-full ${fieldClass}`} value={musicKey} onChange={(event) => setMusicKey(event.target.value)}>
               {["C major", "D major", "E major", "F major", "G major", "A major", "A minor", "C minor", "D minor", "E minor"].map((item) => <option key={item}>{item}</option>)}
             </select>
           </label>
-          <label className="text-[10px] text-ink-600">{t("music.length")}
+          <label className="text-xs text-ink-600">{t("music.length")}
             <select disabled={readOnly || isGenerating} className={`mt-1 w-full ${fieldClass}`} value={durationSeconds} onChange={(event) => setDurationSeconds(Number(event.target.value))}>
               {[15, 30, 60].map((seconds) => <option key={seconds} value={seconds}>{seconds} {isChinese ? "秒" : "seconds"}</option>)}
             </select>
@@ -248,12 +250,12 @@ export function MusicAgentPanel({
 
       {generatedClip && audioUrl ? (
         <div ref={resultRef} className="mt-4 scroll-mt-3 border-t border-stone pt-4" role="status">
-          <p className="mb-2 text-[10px] font-medium text-ink-600">{t("music.preview")}</p>
+          <p className="mb-2 text-[13px] text-ink-600">{t("music.preview")}</p>
           <div className="flex items-center gap-3">
-            <span className="grid h-10 w-10 place-items-center rounded-[8px] bg-human/10 text-human"><AudioWaveform className="h-4 w-4" /></span>
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-[10px] border-[1.5px] border-dashed border-copilot bg-copilot-wash text-copilot-ink"><AudioWaveform className="h-4 w-4" /></span>
             <div className="min-w-0">
               <p className="truncate text-sm font-medium text-black">{generatedClip.name.replace(/\.(mp3|wav)$/i, "")}</p>
-              <p className="text-[10px] text-ink-600">{generatedClip.generation?.provider === "elevenlabs" ? "ElevenLabs Music" : t("music.builtin")} · {generatedClip.duration}{isChinese ? "秒" : "s"}{generatedClip.generation?.bpm ? ` · ${generatedClip.generation.bpm} BPM` : ""} · {generatedClip.generation?.model}</p>
+              <p className="text-xs text-ink-600">{generatedClip.generation?.provider === "elevenlabs" ? "ElevenLabs Music" : t("music.builtin")} · {generatedClip.duration}{isChinese ? "秒" : "s"}{generatedClip.generation?.bpm ? ` · ${generatedClip.generation.bpm} BPM` : ""} · {generatedClip.generation?.model}</p>
             </div>
           </div>
           <audio aria-label={`Preview ${generatedClip.name}`} className="mt-3 h-10 w-full" controls preload="metadata" src={audioUrl} />
@@ -261,7 +263,7 @@ export function MusicAgentPanel({
             type="button"
             disabled={readOnly || addedToRoom || isAddingToRoom || isGenerating}
             onClick={addGeneratedAudio}
-            className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-[8px] border border-human/20 bg-human/8 px-3 py-2.5 text-xs font-medium text-human transition hover:bg-human/14 disabled:cursor-default disabled:opacity-45"
+            className="mt-3 inline-flex h-9 w-full items-center justify-center gap-2 rounded-full bg-black px-3.5 text-sm text-white transition-colors hover:bg-ink-700 disabled:cursor-default disabled:bg-cream disabled:text-ink-600"
           >
             <CloudUpload className="h-4 w-4" />
             {t(addedToRoom ? "music.added" : isAddingToRoom ? "music.adding" : "music.add")}

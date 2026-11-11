@@ -120,19 +120,22 @@ export function WorkstationInspector({ readOnly = false, roomId, notes, events, 
   };
 
   return (
-    <aside className="workstation-inspector flex min-h-[520px] flex-col border-l border-stone bg-cream text-black md:min-h-0">
-      <div className="workstation-inspector-tabs h-16 shrink-0 border-b border-stone px-3">
-        {(["notes", "events", "versions", "copilot"] as const).map((item) => (
-          <button key={item} type="button" onClick={()=>setTab(item)} className={`relative text-xs capitalize ${tab===item ? "font-medium text-human-ink" : "text-ink-600"}`}>
-            {t(`inspector.${item}`)}
-            {tab===item ? <span className="absolute inset-x-2 bottom-0 h-0.5 bg-human" /> : null}
-          </button>
-        ))}
+    <aside className="workstation-inspector flex min-h-[520px] flex-col border-l border-stone bg-canvas text-black md:min-h-0">
+      <div className="flex h-14 shrink-0 items-center border-b border-stone px-3">
+        <div role="tablist" aria-label="Side panel" className="workstation-inspector-tabs w-full gap-0.5 rounded-full bg-cream p-[3px]">
+          {(["copilot", "notes", "events", "versions"] as const).map((item) => (
+            <button key={item} type="button" role="tab" aria-selected={tab===item} onClick={()=>setTab(item)} className={`flex h-8 items-center justify-center gap-1 whitespace-nowrap rounded-full px-1 text-[13px] capitalize transition-[background-color,box-shadow,color] duration-150 ease-studio ${tab===item ? "bg-white text-black shadow-ring" : "text-ink-700 hover:text-black"}`}>
+              {item === "copilot" ? <span className="h-1.5 w-1.5 rounded-full bg-copilot" aria-hidden="true" /> : null}
+              {t(`inspector.${item}`)}
+              {item === "notes" && openNoteCount ? <span className="font-mono text-[11px] text-ink-600">{openNoteCount}</span> : null}
+            </button>
+          ))}
+        </div>
       </div>
       {tab === "notes" ? (
         <>
           <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
-            <div role="group" aria-label={t("inspector.notes")} className="sticky top-0 z-10 grid w-full grid-cols-3 gap-0.5 rounded-full bg-stone p-[3px]">
+            <div role="group" aria-label={t("inspector.notes")} className="sticky top-0 z-10 grid w-full grid-cols-3 gap-0.5 rounded-full bg-cream p-[3px]">
               {(["open", "resolved", "all"] as const).map((filter) => <button key={filter} type="button" onClick={() => setNoteFilter(filter)} aria-pressed={noteFilter === filter} className={`flex min-h-9 min-w-0 items-center justify-center gap-1 whitespace-nowrap rounded-full px-2 text-[13px] transition-[background-color,box-shadow,color] ${noteFilter === filter ? "bg-white text-black shadow-ring" : "text-ink-700 hover:text-black"}`}><span>{t(`inspector.${filter}`)}</span>{filter === "open" ? <span>{openNoteCount}</span> : null}</button>)}
             </div>
             {visibleNotes.map((note, index) => (
