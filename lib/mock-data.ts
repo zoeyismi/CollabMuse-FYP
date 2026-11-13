@@ -1,3 +1,4 @@
+import type { Score } from "@/lib/score.mjs";
 import {
   AudioWaveform,
   BotMessageSquare,
@@ -192,6 +193,8 @@ export type MusicComposition = {
   explanation: string;
   notes: CompositionNote[];
   provider: "openai" | "local";
+  /** Note score: sections, chord track and editable parts (see lib/score.mjs). */
+  score?: Score;
 };
 
 export type RoomVersion = {

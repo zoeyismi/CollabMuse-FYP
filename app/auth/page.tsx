@@ -3,7 +3,7 @@ import { AuthWorkspace } from "@/components/AuthWorkspace";
 
 export default function AuthPage() {
   return (
-    <Suspense fallback={<main className="auth-page min-h-screen" />}>
+    <Suspense fallback={<main className="min-h-screen bg-canvas" />}>
       <AuthWorkspace />
     </Suspense>
   );

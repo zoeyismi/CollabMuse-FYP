@@ -13,6 +13,8 @@ import { MusicAgentPanel } from "@/components/MusicAgentPanel";
 import { TrackList } from "@/components/TrackList";
 import { WorkstationInspector } from "@/components/WorkstationInspector";
 import { WorkstationTimeline } from "@/components/WorkstationTimeline";
+import { ScoreEditor } from "@/components/ScoreEditor";
+import type { Score } from "@/lib/score.mjs";
 import { availableRegionDuration, canEditRegionTiming } from "@/lib/clip-source";
 import { isLoopbackHostname } from "@/lib/local-share";
 import { requestVersionChange } from "@/lib/version-request";
@@ -20,7 +22,7 @@ import { audioFileSizeError } from "@/lib/audio-limits.mjs";
 import { getAudioDuration } from "@/lib/audio-metadata";
 import { waveformPeaksFromSamples } from "@/lib/waveform-peaks";
 import { findFreeTimelineStart } from "@/lib/timeline-placement";
-import { useLanguage } from "@/lib/i18n";
+import { useLanguage, useRoomText } from "@/lib/i18n";
 import { hasPendingVersionChanges } from "@/lib/version-readiness";
 import { isCurrentUpload } from "@/lib/upload-result";
 import { shouldApplyRestore } from "@/lib/restore-order";
@@ -114,6 +116,7 @@ type RoomSocket = Socket<
       roomId: string;
       arrangementEpoch: number;
       composition: MusicComposition;
+      previousScore?: Score | null;
       event: RoomEvent;
     }) => void;
     "room:clips": (payload: { roomId: string; audioClips: AudioClip[]; event?: RoomEvent }) => void;
@@ -305,6 +308,7 @@ type RoomMember = {
 type TimelineHistoryEntry = { regions: TimelineRegion[]; split?: { originalId: string; newId: string } };
 
 export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always session" }: DemoRoomWorkspaceProps) {
+  const tr = useRoomText();
   const { t, language } = useLanguage();
   const arrangementEpochRef = useRef(0);
   const [roomTitle, setRoomTitle] = useState(initialTitle);
@@ -319,6 +323,7 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   const [timelineRedoStack, setTimelineRedoStack] = useState<TimelineHistoryEntry[]>([]);
   const [tracks, setTracks] = useState<Track[]>(roomId === "demo" ? initialTracks : []);
   const [composition, setComposition] = useState<MusicComposition | null>(null);
+  const [workspaceView, setWorkspaceView] = useState<"arrangement" | "score">("arrangement");
   const [audioClips, setAudioClips] = useState<AudioClip[]>([]);
   const [versions, setVersions] = useState<RoomVersion[]>([]);
   const [versionOperationPending, setVersionOperationPending] = useState(false);
@@ -980,13 +985,33 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     if (socketRef.current?.connected) {
       pendingEditsRef.current.add(`composition:${event.id}`);
       setEditSaveState("saving");
-      socketRef.current.emit("room:composition", { roomId, arrangementEpoch: arrangementEpochRef.current, composition: nextComposition, event });
+      socketRef.current.emit("room:composition", { roomId, arrangementEpoch: arrangementEpochRef.current, composition: nextComposition, previousScore: composition?.score ?? null, event });
       setSyncStatus("Saving melody edit");
       return;
     }
 
     void persistRoomChanges(
-      { url: `/api/rooms/${encodeURIComponent(roomId)}`, init: { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ composition: nextComposition, arrangementEpoch: arrangementEpochRef.current }) } },
+      { url: `/api/rooms/${encodeURIComponent(roomId)}`, init: { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ composition: nextComposition, previousScore: composition?.score ?? null, arrangementEpoch: arrangementEpochRef.current }) } },
+      { url: `/api/rooms/${encodeURIComponent(roomId)}/events`, init: { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event }) } },
+    );
+  };
+
+  const handleScoreChange = (nextScore: Score, title: string, detail: string) => {
+    if (rejectViewerEdit()) return;
+    const base: MusicComposition = composition ?? { id: `composition-${Date.now()}`, title: "Score", key: nextScore.key, tempo: bpm, style: "", explanation: "", notes: [], provider: "local" };
+    const nextComposition: MusicComposition = { ...base, key: nextScore.key, score: nextScore };
+    const event = createEvent(/copilot/i.test(title) ? "remix" : "move", title, `${currentUserName} · ${detail}`);
+    setComposition(nextComposition);
+    prependEvent(event);
+    if (socketRef.current?.connected) {
+      pendingEditsRef.current.add(`composition:${event.id}`);
+      setEditSaveState("saving");
+      socketRef.current.emit("room:composition", { roomId, arrangementEpoch: arrangementEpochRef.current, composition: nextComposition, previousScore: composition?.score ?? null, event });
+      setSyncStatus("Saving score");
+      return;
+    }
+    void persistRoomChanges(
+      { url: `/api/rooms/${encodeURIComponent(roomId)}`, init: { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ composition: nextComposition, previousScore: composition?.score ?? null, arrangementEpoch: arrangementEpochRef.current }) } },
       { url: `/api/rooms/${encodeURIComponent(roomId)}/events`, init: { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event }) } },
     );
   };
@@ -1693,50 +1718,64 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
   );
 
   return (
-    <main className="min-h-screen bg-[#f7f7f5] p-2 text-white lg:h-screen lg:overflow-hidden">
-      <section className="relative mx-auto flex min-h-[calc(100vh-16px)] max-w-[1920px] flex-col overflow-hidden rounded-[18px] bg-[#f1f0eb] shadow-2xl md:h-[calc(100vh-16px)]">
-        <header className="flex min-h-16 shrink-0 flex-col items-stretch justify-between gap-2 bg-[#174a78] px-4 py-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
+    <main className="min-h-screen bg-canvas text-black lg:h-screen lg:overflow-hidden">
+      <section className="relative mx-auto flex min-h-screen max-w-[1920px] flex-col overflow-hidden bg-canvas md:h-screen">
+        <header className="flex min-h-16 shrink-0 flex-col items-stretch justify-between gap-2 border-b border-stone bg-canvas px-4 py-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
           <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 sm:gap-3">
-            <Link href="/dashboard" onClick={(event) => { const warning = hasRecordingAtRisk ? (language === "zh" ? "录音正在进行或尚未保存，离开可能丢失录音和未发送的草稿。确定离开吗？" : "A recording is in progress or not yet saved. Leaving may lose it and any unsent drafts. Leave anyway?") : hasUnsavedNoteDraft ? (language === "zh" ? "有未发送的留言或回复，离开后草稿会丢失。确定离开吗？" : "You have an unsent note or reply. Leave and discard the draft?") : versionOperationPending ? (language === "zh" ? "版本操作尚未完成，离开后可能无法确认结果。确定离开吗？" : "A version operation is still in progress. Leaving may prevent confirmation of its result. Leave anyway?") : ""; if (warning && !window.confirm(warning)) event.preventDefault(); }} className="grid h-9 w-9 place-items-center rounded-[8px] text-white/60 transition hover:bg-white/8 hover:text-white" title="Back to dashboard"><ArrowLeft className="h-4 w-4" /></Link>
-            <div className="h-7 w-px bg-white/12" />
-            <div><h1 className="text-[17px] font-semibold text-white">{roomTitle}</h1><p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-white/70"><Circle className={`h-2 w-2 ${connectionState === "online" ? "fill-[#58e081] text-[#58e081]" : "fill-[#f0be64] text-[#f0be64]"}`} />{roomConnectionLabel(connectionState, language)}</p></div>
+            <Link href="/dashboard" onClick={(event) => { const warning = hasRecordingAtRisk ? (language === "zh" ? "录音正在进行或尚未保存，离开可能丢失录音和未发送的草稿。确定离开吗？" : "A recording is in progress or not yet saved. Leaving may lose it and any unsent drafts. Leave anyway?") : hasUnsavedNoteDraft ? (language === "zh" ? "有未发送的留言或回复，离开后草稿会丢失。确定离开吗？" : "You have an unsent note or reply. Leave and discard the draft?") : versionOperationPending ? (language === "zh" ? "版本操作尚未完成，离开后可能无法确认结果。确定离开吗？" : "A version operation is still in progress. Leaving may prevent confirmation of its result. Leave anyway?") : ""; if (warning && !window.confirm(warning)) event.preventDefault(); }} className="grid h-10 w-10 place-items-center rounded-full bg-white text-black shadow-ring transition-colors hover:bg-cream" title={tr("Back to dashboard")} aria-label={tr("Back to dashboard")}><ArrowLeft className="h-4 w-4" /></Link>
+            
+            <div><h1 className="font-display text-xl font-light tracking-[-0.01em]">{roomTitle}</h1><p className="mt-0.5 flex items-center gap-1.5 text-xs text-ink-600"><Circle className={`h-2 w-2 ${connectionState === "online" ? "fill-[#2f9e5b] text-[#2f9e5b]" : "fill-copilot text-copilot"}`} />{roomConnectionLabel(connectionState, language)}</p></div>
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            <button type="button" className="flex items-center gap-2 rounded-[8px] px-2 py-1 transition hover:bg-white/8" onClick={() => setShowMembers((value) => !value)} title={language === "zh" ? "房间成员" : "Room members"} aria-label={language === "zh" ? "房间成员" : "Room members"}>{members.length ? <CollaboratorAvatars names={members.slice(0, 3).map((member) => member.name.slice(0, 2).toUpperCase())} /> : <UsersRound className="h-5 w-5 text-white/70" />}<span className="hidden text-xs text-white/70 lg:inline">{connectionState === "online" ? (language === "zh" ? `${onlineCount} 人在线` : `${onlineCount} online`) : (language === "zh" ? "未连接" : "Not connected")} · {isAccessLoading ? (language === "zh" ? "正在检查权限" : "checking access") : language === "zh" ? ({ owner: "所有者", editor: "编辑者", viewer: "查看者" }[currentRole] ?? currentRole) : currentRole}</span></button>
-            <span className="hidden max-w-[220px] truncate text-[11px] text-white/45 xl:inline" title={syncStatus}>{syncStatus}</span>
-            {editSaveState !== "idle" ? <span role="status" className={`text-[11px] ${editSaveState === "error" ? "text-[#ffe0ad]" : "text-white/75"}`}>{editSaveState === "saving" ? "Saving edits..." : editSaveState === "saved" ? "Edits saved" : "Save needs attention"}</span> : null}
-            <div className="hidden items-center border-x border-white/10 px-2 sm:flex">
-              <button className="workstation-dark-tool" onClick={handleUndoTimeline} disabled={!canEdit || !timelineUndoStack.length} title="Undo"><Undo2 className="h-4 w-4" /></button>
-              <button className="workstation-dark-tool" onClick={handleRedoTimeline} disabled={!canEdit || !timelineRedoStack.length} title="Redo"><Redo2 className="h-4 w-4" /></button>
+            <button type="button" className="flex items-center gap-2 rounded-full px-2 py-1 transition-colors hover:bg-cream" onClick={() => setShowMembers((value) => !value)} title={language === "zh" ? "房间成员" : tr("Room members")} aria-label={language === "zh" ? "房间成员" : tr("Room members")}>{members.length ? <CollaboratorAvatars names={members.slice(0, 3).map((member) => member.name.slice(0, 2).toUpperCase())} /> : <UsersRound className="h-5 w-5 text-ink-700" />}<span className="hidden text-xs text-ink-700 lg:inline">{connectionState === "online" ? (language === "zh" ? `${onlineCount} 人在线` : `${onlineCount} online`) : (language === "zh" ? "未连接" : tr("Not connected"))} · {isAccessLoading ? (language === "zh" ? "正在检查权限" : "checking access") : language === "zh" ? ({ owner: "所有者", editor: "编辑者", viewer: "查看者" }[currentRole] ?? currentRole) : currentRole}</span></button>
+            <span className="hidden max-w-[220px] truncate text-xs text-ink-600 xl:inline" title={syncStatus}>{syncStatus}</span>
+            {editSaveState !== "idle" ? <span role="status" className={`text-[11px] ${editSaveState === "error" ? "text-copilot-ink" : "text-ink-700"}`}>{editSaveState === "saving" ? tr("Saving edits...") : editSaveState === "saved" ? tr("Edits saved") : tr("Save needs attention")}</span> : null}
+            <div className="hidden items-center border-x border-stone px-2 sm:flex">
+              <button className="workstation-dark-tool" onClick={handleUndoTimeline} disabled={!canEdit || !timelineUndoStack.length} title={tr("Undo")}><Undo2 className="h-4 w-4" /></button>
+              <button className="workstation-dark-tool" onClick={handleRedoTimeline} disabled={!canEdit || !timelineRedoStack.length} title={tr("Redo")}><Redo2 className="h-4 w-4" /></button>
             </div>
-            <LanguageSwitcher compact />
-            {currentRole === "owner" && !isAccessLoading ? <a href={`/api/rooms/${encodeURIComponent(roomId)}/backup`} download className="grid h-9 w-9 place-items-center rounded-[8px] text-white/75 transition hover:bg-white/10 hover:text-white" aria-label="Download project backup" title="Download project backup (ZIP)"><Download className="h-4 w-4" /></a> : null}
-            <GlassButton icon={Share2} className="min-w-0 rounded-[9px] border-white/10 bg-white/8 px-3 py-2 text-xs sm:px-4" onClick={() => void handleShareRoom(inviteRole)}>{shareStatus}</GlassButton>
+            <LanguageSwitcher compact tone="light" />
+            {currentRole === "owner" && !isAccessLoading ? <a href={`/api/rooms/${encodeURIComponent(roomId)}/backup`} download className="grid h-9 w-9 place-items-center rounded-full text-ink-700 transition-colors hover:bg-stone hover:text-black" aria-label={tr("Download project backup")} title={tr("Download project backup (ZIP)")}><Download className="h-4 w-4" /></a> : null}
+            <GlassButton icon={Share2} className="min-w-0" onClick={() => void handleShareRoom(inviteRole)}>{tr(shareStatus)}</GlassButton>
           </div>
         </header>
 
-        {showMembers ? <div className="absolute right-4 top-16 z-50 w-80 rounded-[12px] border border-[#18202a]/12 bg-[#f7f5f0] p-3 text-[#172033] shadow-2xl">
-          <div className="flex items-center justify-between"><div><p className="text-[11px] uppercase tracking-[0.2em] text-[#172033]/42">Room access</p><h2 className="mt-1 text-sm font-semibold">Members</h2></div><span className="rounded-full bg-[#184eb6]/10 px-2 py-1 text-[10px] font-semibold text-[#184eb6]">{currentRole}</span></div>
-          {currentRole === "owner" && roomId !== "demo" ? <div className="mt-3 flex gap-2 rounded-[8px] bg-[#18202a]/[0.045] p-2"><select value={inviteRole} onChange={(event) => setInviteRole(event.target.value as "editor" | "viewer")} className="min-w-0 flex-1 rounded-[7px] border border-[#18202a]/10 bg-white px-2 py-1.5 text-xs"><option value="editor">Can edit</option><option value="viewer">View only</option></select><button type="button" onClick={() => void handleShareRoom(inviteRole)} className="rounded-[7px] bg-[#184eb6] px-3 py-1.5 text-xs font-semibold text-white">Copy invite</button></div> : null}
-          <div className="mt-3 space-y-1.5">{members.length ? members.map((member) => <div key={member.userId} className="flex items-center gap-2 rounded-[8px] bg-[#18202a]/[0.045] px-3 py-2"><span className="grid h-7 w-7 place-items-center rounded-full bg-[#184eb6] text-[10px] font-bold text-white">{member.name.slice(0, 1).toUpperCase()}</span><div className="min-w-0 flex-1"><p className="truncate text-xs font-semibold">{member.name}</p><p className="truncate text-[10px] text-[#172033]/42">{member.email ?? member.role}</p></div>{member.role === "owner" || currentRole !== "owner" ? <span className="text-[10px] capitalize text-[#172033]/48">{member.role}</span> : <><select value={member.role} onChange={(event) => void handleMemberRole(member, event.target.value as "editor" | "viewer")} className="rounded-[6px] border border-[#18202a]/10 bg-white px-1.5 py-1 text-[10px]"><option value="editor">Editor</option><option value="viewer">Viewer</option></select><button type="button" onClick={() => void handleRemoveMember(member)} className="text-[10px] text-[#a33a36]">Remove</button></>}</div>) : <p className="rounded-[8px] border border-dashed border-[#18202a]/12 p-3 text-xs text-[#172033]/46">No invited members yet. Use Share room to invite an editor.</p>}</div>
+        {showMembers ? <div className="absolute right-4 top-16 z-50 w-80 rounded-[12px] border border-stone bg-cream p-3 text-black shadow-2xl">
+          <div className="flex items-center justify-between"><div><p className="text-[11px] text-ink-600">{tr("Room access")}</p><h2 className="mt-1 text-sm font-medium">{tr("Members")}</h2></div><span className="rounded-full bg-human/10 px-2 py-1 text-[10px] font-medium text-human">{currentRole}</span></div>
+          {currentRole === "owner" && roomId !== "demo" ? <div className="mt-3 flex gap-2 rounded-[8px] bg-black/[0.045] p-2"><select value={inviteRole} onChange={(event) => setInviteRole(event.target.value as "editor" | "viewer")} className="min-w-0 flex-1 rounded-[7px] border border-stone bg-white px-2 py-1.5 text-xs"><option value="editor">{tr("Can edit")}</option><option value="viewer">{tr("View only")}</option></select><button type="button" onClick={() => void handleShareRoom(inviteRole)} className="rounded-[7px] bg-human px-3 py-1.5 text-xs font-medium text-white">{tr("Copy invite")}</button></div> : null}
+          <div className="mt-3 space-y-1.5">{members.length ? members.map((member) => <div key={member.userId} className="flex items-center gap-2 rounded-[8px] bg-black/[0.045] px-3 py-2"><span className="grid h-7 w-7 place-items-center rounded-full bg-human text-[10px] font-medium text-white">{member.name.slice(0, 1).toUpperCase()}</span><div className="min-w-0 flex-1"><p className="truncate text-xs font-medium">{member.name}</p><p className="truncate text-[10px] text-ink-600">{member.email ?? member.role}</p></div>{member.role === "owner" || currentRole !== "owner" ? <span className="text-[10px] capitalize text-ink-600">{member.role}</span> : <><select value={member.role} onChange={(event) => void handleMemberRole(member, event.target.value as "editor" | "viewer")} className="rounded-[6px] border border-stone bg-white px-1.5 py-1 text-[10px]"><option value="editor">{tr("Editor")}</option><option value="viewer">{tr("Viewer")}</option></select><button type="button" onClick={() => void handleRemoveMember(member)} className="text-[10px] text-[#a33a36]">{tr("Remove")}</button></>}</div>) : <p className="rounded-[8px] border border-dashed border-stone p-3 text-xs text-ink-600">{tr("No invited members yet. Use Share room to invite an editor.")}</p>}</div>
         </div> : null}
 
-        {roomError ? <div className="grid min-h-0 flex-1 place-items-center bg-[#f1f0eb] p-6 text-center text-[#172033]" role="alert"><div><p className="text-sm font-semibold">Room not found</p><p className="mt-2 text-sm text-[#172033]/60">{roomError}</p><Link href="/dashboard" className="mt-4 inline-block rounded-[7px] bg-[#184eb6] px-4 py-2 text-sm font-semibold text-white">Back to dashboard</Link></div></div> : isRoomLoading ? <div className="grid min-h-0 flex-1 place-items-center bg-[#f1f0eb] text-[#172033]" role="status"><div className="text-center"><AudioWaveform className="mx-auto h-7 w-7 animate-pulse text-[#184eb6]" /><p className="mt-3 text-sm font-semibold">Loading workspace...</p><p className="mt-1 text-xs text-[#172033]/42">Restoring tracks, clips and room access</p></div></div> : <>
-        {saveError ? <div className="flex shrink-0 items-center justify-center gap-3 bg-[#fff0e9] px-4 py-2 text-xs text-[#8b2d20]" role="alert"><span>{saveError}</span><button type="button" onClick={() => setSaveError("")} className="font-semibold underline">{language === "zh" ? "关闭" : "Dismiss"}</button></div> : null}
-        {legacyOpenRoom ? <div role="alert" className="shrink-0 bg-[#fff0e9] px-4 py-2 text-center text-xs text-[#8b2d20]">This older room has no account owner and is not private. Log in and duplicate it from the dashboard to create a private copy.</div> : null}
-        {roomId === "demo" && timelineRegions.some((region) => !region.clipId) ? <div className="shrink-0 bg-[#f2f0dc] px-4 py-2 text-center text-xs text-[#5d5424]">{t(hasPlayableAudio(uploadedAudioUrl, audioClips, timelineRegions) ? "room.demoPlayableNotice" : "room.demoSampleNotice")}</div> : null}
-        {isAccessLoading ? <div className="shrink-0 bg-[#eef2f6] px-4 py-1.5 text-center text-[11px] font-medium text-[#174a78]" role="status">{language === "zh" ? "正在检查房间权限……" : "Checking room access..."}</div> : connectionState !== "online" ? <div className="shrink-0 bg-[#fff0e9] px-4 py-1.5 text-center text-[11px] font-medium text-[#8b2d20]" role="status">{roomConnectionMessage(connectionState, language)}</div> : !canEdit ? <div className="shrink-0 bg-[#dfe8f4] px-4 py-1.5 text-center text-[11px] font-medium text-[#174a78]">{language === "zh" ? "只读权限：可以播放、浏览和导出，但不能编辑。" : "View-only access: playback, navigation and export are available. Editing is locked."}</div> : null}
-        <ControlPanel readOnly={!canEdit} uploadedFileName={uploadedFileName} uploadedAudioUrl={uploadedAudioUrl} referenceMuted={referenceMuted} onReferenceMuteChange={handleReferenceMute} onAudioUpload={handleUpload} onRecordedClip={handleClipUpload} onRecordingAtRiskChange={setHasRecordingAtRisk} roomId={roomId} tracks={tracks} regions={timelineRegions} audioClips={audioClips} onPlayheadChange={setPlayheadPosition} snapMode={snapMode} onSnapModeChange={setSnapMode} seekRequest={seekRequest} transportCommand={transportCommand} onTransportAction={handleTransportAction} bpm={bpm} timeSignature={timeSignature} onSessionSettingsChange={handleSessionSettingsChange} />
+        {roomError ? <div className="grid min-h-0 flex-1 place-items-center bg-cream p-6 text-center text-black" role="alert"><div><p className="text-sm font-medium">{tr("Room not found")}</p><p className="mt-2 text-sm text-ink-700">{roomError}</p><Link href="/dashboard" className="mt-4 inline-block rounded-[7px] bg-human px-4 py-2 text-sm font-medium text-white">{tr("Back to dashboard")}</Link></div></div> : isRoomLoading ? <div className="grid min-h-0 flex-1 place-items-center bg-cream text-black" role="status"><div className="text-center"><AudioWaveform className="mx-auto h-7 w-7 animate-pulse text-human" /><p className="mt-3 text-sm font-medium">{tr("Loading workspace...")}</p><p className="mt-1 text-xs text-ink-600">{tr("Restoring tracks, clips and room access")}</p></div></div> : <>
+        {saveError ? <div className="flex shrink-0 items-center justify-center gap-3 bg-copilot-wash px-4 py-2 text-xs text-copilot-ink" role="alert"><span>{saveError}</span><button type="button" onClick={() => setSaveError("")} className="font-medium underline">{language === "zh" ? "关闭" : tr("Dismiss")}</button></div> : null}
+        {legacyOpenRoom ? <div role="alert" className="shrink-0 bg-copilot-wash px-4 py-2 text-center text-xs text-copilot-ink">{tr("This older room has no account owner and is not private. Log in and duplicate it from the dashboard to create a private copy.")}</div> : null}
+        {roomId === "demo" && timelineRegions.some((region) => !region.clipId) ? <div className="shrink-0 bg-cream px-4 py-2 text-center text-xs text-[#5d5424]">{t(hasPlayableAudio(uploadedAudioUrl, audioClips, timelineRegions) ? "room.demoPlayableNotice" : "room.demoSampleNotice")}</div> : null}
+        {isAccessLoading ? <div className="shrink-0 bg-cream px-4 py-1.5 text-center text-[11px] font-medium text-human-ink" role="status">{language === "zh" ? "正在检查房间权限……" : tr("Checking room access...")}</div> : connectionState !== "online" ? <div className="shrink-0 bg-copilot-wash px-4 py-1.5 text-center text-[11px] font-medium text-copilot-ink" role="status">{roomConnectionMessage(connectionState, language)}</div> : !canEdit ? <div className="shrink-0 bg-human-wash px-4 py-1.5 text-center text-[11px] font-medium text-human-ink">{language === "zh" ? "只读权限：可以播放、浏览和导出，但不能编辑。" : tr("View-only access: playback, navigation and export are available. Editing is locked.")}</div> : null}
+        <ControlPanel readOnly={!canEdit} uploadedFileName={uploadedFileName} uploadedAudioUrl={uploadedAudioUrl} referenceMuted={referenceMuted} onReferenceMuteChange={handleReferenceMute} onAudioUpload={handleUpload} onRecordedClip={handleClipUpload} onRecordingAtRiskChange={setHasRecordingAtRisk} roomId={roomId} tracks={tracks} regions={timelineRegions} audioClips={audioClips} onPlayheadChange={setPlayheadPosition} snapMode={snapMode} onSnapModeChange={setSnapMode} seekRequest={seekRequest} transportCommand={transportCommand} onTransportAction={handleTransportAction} score={composition?.score ?? null} bpm={bpm} timeSignature={timeSignature} onSessionSettingsChange={handleSessionSettingsChange} />
 
-        <div className="workstation-grid grid min-h-0 flex-1 md:grid-cols-[170px_minmax(0,1fr)_230px] xl:grid-cols-[210px_minmax(0,1fr)_300px]">
+        <div className="flex h-11 shrink-0 items-center gap-3 border-b border-stone px-4">
+          <div role="tablist" aria-label={language === "zh" ? "工作区视图" : "Workspace view"} className="flex gap-0.5 rounded-full bg-cream p-[3px]">
+            {([["arrangement", language === "zh" ? "编曲 · 音频" : "Arrangement · audio"], ["score", language === "zh" ? "作曲 · 音符" : "Score · notes"]] as const).map(([view, label]) => (
+              <button key={view} type="button" role="tab" aria-selected={workspaceView === view} onClick={() => setWorkspaceView(view)} className={`flex h-7 items-center gap-1.5 rounded-full px-3 text-[13px] transition-[background-color,box-shadow,color] duration-150 ease-studio ${workspaceView === view ? "bg-white text-black shadow-ring" : "text-ink-700 hover:text-black"}`}>{label}</button>
+            ))}
+          </div>
+          <span className="truncate text-xs text-ink-600">{workspaceView === "score" ? (composition?.score ? `${composition.score.key} · ${composition.score.bars} ${language === "zh" ? "小节" : "bars"} · ${composition.score.parts.length} ${language === "zh" ? "个声部" : "parts"}` : (language === "zh" ? "还没有乐谱" : "No score yet")) : `${tracks.length} ${language === "zh" ? "条音轨" : "tracks"} · ${timelineRegions.length} ${language === "zh" ? "个片段" : "regions"}${(() => { const playing = composition?.score?.parts.filter((part) => !part.muted && (part.source === "human" || part.kept) && part.notes.length).length ?? 0; return playing ? (language === "zh" ? ` · 乐谱中 ${playing} 个声部随播放一起响` : ` · ${playing} score ${playing === 1 ? "part plays" : "parts play"} along`) : ""; })()}`}</span>
+        </div>
+        <div className={`workstation-grid grid min-h-0 flex-1 ${workspaceView === "score" ? "md:grid-cols-[minmax(0,1fr)_264px] xl:grid-cols-[minmax(0,1fr)_340px]" : "md:grid-cols-[180px_minmax(0,1fr)_264px] xl:grid-cols-[220px_minmax(0,1fr)_340px]"}`}>
+          {workspaceView === "score" ? (
+            <ScoreEditor score={composition?.score ?? null} bpm={bpm} readOnly={!canEdit} language={language} roomTitle={roomTitle} userName={currentUserName} onChange={handleScoreChange} />
+          ) : (
+            <>
           <TrackList readOnly={!canEdit} tracks={tracks} regions={timelineRegions} onAddTrack={handleAddTrack} onRenameTrack={handleRenameTrack} onToggleMute={handleToggleMute} onToggleSolo={handleToggleSolo} onSetVolume={handleSetTrackVolume} onDeleteTrack={handleDeleteTrack} />
-          <WorkstationTimeline readOnly={!canEdit} tracks={tracks} regions={timelineRegions} notes={notes} uploadedFileName={uploadedFileName} waveformPeaks={waveformPeaks} audioClips={audioClips} bpm={bpm} playheadPosition={playheadPosition} onSelectionAction={handleSelectionAction} onUseAIContext={handleTimelineAIContext} onRegionsChange={handleRegionsChange} snapMode={snapMode} onSelectionChange={setSelectedRegionId} onPlayheadSeek={(position) => { setPlayheadPosition(position); setSeekRequest((current) => ({ id: (current?.id ?? 0) + 1, position })); }} />
+            <WorkstationTimeline readOnly={!canEdit} tracks={tracks} regions={timelineRegions} notes={notes} uploadedFileName={uploadedFileName} waveformPeaks={waveformPeaks} audioClips={audioClips} bpm={bpm} playheadPosition={playheadPosition} onSelectionAction={handleSelectionAction} onUseAIContext={handleTimelineAIContext} onRegionsChange={handleRegionsChange} snapMode={snapMode} onSelectionChange={setSelectedRegionId} onPlayheadSeek={(position) => { setPlayheadPosition(position); setSeekRequest((current) => ({ id: (current?.id ?? 0) + 1, position })); }} />
+            </>
+          )}
           <WorkstationInspector readOnly={!canEdit} roomId={roomId} notes={notes} events={events} copilot={copilotPanel} openCopilotRequest={openCopilotRequest} regions={timelineRegions} selectedRegion={timelineRegions.find((region) => region.id === selectedRegionId)} onSendNote={handleSendNote} onReplyToNote={handleReplyToNote} onDraftPresenceChange={setHasUnsavedNoteDraft} onResolveNote={handleResolveNote} onDeleteNote={handleDeleteNote} onSelectNote={(position) => { setPlayheadPosition(position); setSeekRequest((current) => ({ id: (current?.id ?? 0) + 1, position })); setSyncStatus(`Jumped to note at ${Math.round(position)}%`); }} versions={versions} versionOperationPending={versionOperationPending} onCreateVersion={handleCreateVersion} onRestoreVersion={handleRestoreVersion} />
         </div>
 
-        <div className="shrink-0 border-t border-[#18202a]/12 bg-[#f6f4ef] text-[#172033]">
-          <button type="button" className="flex h-12 w-full items-center justify-between px-5 text-sm" onClick={()=>setIsClipLibraryOpen((value)=>!value)}><span className="font-semibold">{isClipLibraryOpen ? "Hide clips" : "Clips"} <span className="ml-1 font-normal text-[#172033]/42">{audioClips.length}</span></span><span className="text-xs text-[#172033]/42">Upload stems and send clips to Copilot</span></button>
-          {isClipLibraryOpen ? <div className="max-h-[300px] overflow-y-auto border-t border-[#18202a]/10 p-3"><ClipLibrary readOnly={!canEdit} roomId={roomId} clips={audioClips} tracks={tracks} isUploading={isUploadingClip} onUpload={handleClipUpload} onDelete={handleClipDelete} onAddToTimeline={handleAddClipToTimeline} onAddGeneratedTrack={handleAddGeneratedMusicToRoom} onUseForAI={(clip)=>{setCopilotSourceClip(clip);setOpenCopilotRequest((current)=>current+1);setSyncStatus(`${clip.name} selected as Music Copilot context`);}} /></div> : null}
+        <div className="shrink-0 border-t border-stone bg-cream text-black">
+          <button type="button" className="flex h-12 w-full items-center justify-between px-5 text-sm" onClick={()=>setIsClipLibraryOpen((value)=>!value)}><span className="font-medium">{isClipLibraryOpen ? tr("Hide clips") : tr("Clips")} <span className="ml-1 font-normal text-ink-600">{audioClips.length}</span></span><span className="text-xs text-ink-600">{tr("Upload stems and send clips to Copilot")}</span></button>
+          {isClipLibraryOpen ? <div className="max-h-[300px] overflow-y-auto border-t border-stone p-3"><ClipLibrary readOnly={!canEdit} roomId={roomId} clips={audioClips} tracks={tracks} isUploading={isUploadingClip} onUpload={handleClipUpload} onDelete={handleClipDelete} onAddToTimeline={handleAddClipToTimeline} onAddGeneratedTrack={handleAddGeneratedMusicToRoom} onUseForAI={(clip)=>{setCopilotSourceClip(clip);setOpenCopilotRequest((current)=>current+1);setSyncStatus(`${clip.name} selected as Music Copilot context`);}} /></div> : null}
         </div>
         </>}
       </section>

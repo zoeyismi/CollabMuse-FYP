@@ -3,12 +3,23 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { LogOut } from "lucide-react";
-import { Music2 } from "@/components/Icons";
-import { GlassButton } from "@/components/GlassButton";
+import { GlassButton, buttonClasses } from "@/components/GlassButton";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { useLanguage } from "@/lib/i18n";
+import { cn } from "@/lib/utils";
 
-export function Navbar({ overlay = false }: { overlay?: boolean }) {
+/** Small vinyl mark: an orange label inside black grooves. */
+export function VinylMark({ className }: { className?: string }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cn("inline-block h-[22px] w-[22px] shrink-0 rounded-full", className)}
+      style={{ background: "radial-gradient(circle closest-side, #ff4704 0 26%, #000 29% 52%, #44403b 54% 59%, #000 61% 76%, #2a2826 78% 81%, #000 83% 100%, transparent 100%)" }}
+    />
+  );
+}
+
+export function Navbar() {
   const { t } = useLanguage();
   const [user, setUser] = useState<{ name: string } | null>(null);
 
@@ -26,46 +37,37 @@ export function Navbar({ overlay = false }: { overlay?: boolean }) {
   };
 
   return (
-    <header className={`sticky top-0 z-40 text-[#17324b] ${overlay ? "bg-transparent" : "bg-[#f7f7f5]"}`}>
-      <nav className="mx-auto flex max-w-7xl items-center justify-between px-5 py-4">
-        <Link href="/" className="flex items-center gap-3">
-          <span className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/15 bg-[linear-gradient(145deg,rgba(35,95,186,0.55),rgba(183,25,18,0.22))] shadow-[0_0_36px_rgba(35,95,186,0.22)]">
-            <Music2 className="h-5 w-5 text-[#efd84c]" />
-          </span>
-          <span>
-            <span className="block text-sm font-semibold tracking-wide text-[#17324b]">CollabMuse</span>
-            <span className="block text-xs text-[#17324b]/52">{t("brand.subtitle")}</span>
-          </span>
+    <header>
+      <nav aria-label={t("home.nav.label")} className="mx-auto grid max-w-[1280px] grid-cols-[1fr_auto] items-center gap-4 px-5 py-4 sm:px-8 lg:grid-cols-[1fr_auto_1fr]">
+        <Link href="/" className="flex items-center gap-2.5 text-lg font-medium tracking-[-0.01em]">
+          <VinylMark />
+          CollabMuse
         </Link>
-        <div className="hidden items-center gap-8 text-sm text-[#17324b]/68 md:flex">
-          <Link href="/#features" className="hover:text-[#17324b]">{t("nav.features")}</Link>
-          <Link href="/#workflow" className="hover:text-[#17324b]">{t("nav.workflow")}</Link>
-          <Link href="/dashboard" className="hover:text-[#17324b]">{t("nav.dashboard")}</Link>
+        <div className="hidden h-9 items-center gap-1 rounded-full bg-cream pl-3 pr-1 text-[13px] lg:flex">
+          <span className="h-2 w-2 rounded-full bg-copilot" aria-hidden="true" />
+          <span className="ml-1 mr-2 text-ink-700">{t("home.live")}</span>
+          <Link href="/room/demo" className="flex h-7 items-center rounded-full bg-white px-3 shadow-ring transition-colors duration-150 ease-studio hover:bg-cream">
+            {t("home.listen")}
+          </Link>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center justify-end gap-2">
+          <LanguageSwitcher compact tone="light" />
           {user ? (
             <>
-              <Link href="/dashboard" className="hidden text-sm text-[#17324b]/68 hover:text-[#17324b] sm:block">
+              <Link href="/dashboard" className={cn(buttonClasses("quiet"), "hidden sm:inline-flex")}>
                 {user.name}
               </Link>
-              <button
-                type="button"
-                onClick={logOut}
-                className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-[#17324b]/14 bg-[#17324b]/[0.045] text-[#17324b]/65 transition hover:bg-[#17324b]/[0.1] hover:text-[#17324b]"
-                title={t("nav.logout")}
-              >
-                <LogOut className="h-4 w-4" />
+              <button type="button" onClick={logOut} aria-label={t("nav.logout")} title={t("nav.logout")} className={cn(buttonClasses("secondary"), "w-9 px-0")}>
+                <LogOut className="h-4 w-4" aria-hidden="true" />
               </button>
+              <GlassButton href="/dashboard">{t("home.yourRooms")}</GlassButton>
             </>
           ) : (
-            <Link href="/auth?mode=login" className="hidden text-sm text-[#17324b]/68 hover:text-[#17324b] sm:block">
-              {t("nav.login")}
-            </Link>
+            <>
+              <GlassButton href="/auth?mode=login" variant="secondary" className="hidden sm:inline-flex">{t("nav.login")}</GlassButton>
+              <GlassButton href="/auth?mode=register">{t("home.start")}</GlassButton>
+            </>
           )}
-          <LanguageSwitcher compact tone="light" />
-          <GlassButton href={user ? "/dashboard" : "/auth?mode=register"} variant="secondary" className="border-[#17324b]/24 bg-[#17324b] px-4 py-2 text-[#f7f4ec] hover:bg-[#234968]">
-            {user ? t("nav.workspace") : t("nav.start")}
-          </GlassButton>
         </div>
       </nav>
     </header>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AudioWaveform, Circle, Download, Pause, Play, SkipBack, SkipForward, Upload, Volume2, VolumeX } from "@/components/Icons";
 import type { AudioClip, TimelineRegion, Track } from "@/lib/mock-data";
 import { audioBufferExceedsPcmRange, audioBufferToWav } from "@/lib/audio-wav";
@@ -13,8 +13,10 @@ import { playbackLayoutKey } from "@/lib/playback-layout";
 import { exportSegmentRange } from "@/lib/export-segment";
 import { playClipSegment, startTrackedAudio } from "@/lib/clip-playback";
 import { hasPlayableAudio as roomHasPlayableAudio } from "@/lib/playable-audio";
+import { playScore, renderScore, stopScore } from "@/lib/score-player";
+import type { Score } from "@/lib/score.mjs";
 import { resolveTempoEdit } from "@/lib/tempo-input";
-import { useLanguage } from "@/lib/i18n";
+import { useLanguage, useRoomText } from "@/lib/i18n";
 
 type ControlPanelProps = {
   readOnly?: boolean;
@@ -33,6 +35,8 @@ type ControlPanelProps = {
   seekRequest?: { id: number; position: number } | null;
   transportCommand?: TransportCommand | null;
   onTransportAction?: (action: Omit<TransportCommand, "id">) => void;
+  /** Note score; its people-written and kept parts play along with the timeline. */
+  score?: Score | null;
   onRecordedClip?: (file: File, trackId: string) => Promise<boolean>;
   onRecordingAtRiskChange?: (atRisk: boolean) => void;
   bpm: number;
@@ -46,7 +50,8 @@ export type TransportCommand = {
   position: number;
 };
 
-export function ControlPanel({ readOnly = false, uploadedFileName, uploadedAudioUrl, referenceMuted, onReferenceMuteChange, onAudioUpload, roomId, tracks, regions, audioClips, onPlayheadChange, snapMode, onSnapModeChange, seekRequest, transportCommand, onTransportAction, onRecordedClip, onRecordingAtRiskChange, bpm, timeSignature, onSessionSettingsChange }: ControlPanelProps) {
+export function ControlPanel({ readOnly = false, uploadedFileName, uploadedAudioUrl, referenceMuted, onReferenceMuteChange, onAudioUpload, roomId, tracks, regions, audioClips, onPlayheadChange, snapMode, onSnapModeChange, seekRequest, transportCommand, onTransportAction, score, onRecordedClip, onRecordingAtRiskChange, bpm, timeSignature, onSessionSettingsChange }: ControlPanelProps) {
+  const tr = useRoomText();
   const { language } = useLanguage();
   const [tempoDraft, setTempoDraft] = useState(String(bpm));
   const tempoEditingRef = useRef(false);
@@ -54,6 +59,7 @@ export function ControlPanel({ readOnly = false, uploadedFileName, uploadedAudio
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const clipAudioRefs = useRef(new Map<string, HTMLAudioElement>());
   const clipTimersRef = useRef<number[]>([]);
+  const lastPlayheadReportRef = useRef(0);
   const animationFrameRef = useRef<number | null>(null);
   const playbackGenerationRef = useRef(0);
   const clockOriginRef = useRef(0);
@@ -90,11 +96,20 @@ export function ControlPanel({ readOnly = false, uploadedFileName, uploadedAudio
   const [unsavedRecording, setUnsavedRecording] = useState<{ file: File; trackId: string } | null>(null);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const hasRecordingAtRisk = recordingAtRisk(recordingStatus, Boolean(unsavedRecording));
-  const timelineDuration = getTimelineDuration(duration, audioClips, regions);
+  const arrangementScore = useMemo(() => {
+    if (!score) return null;
+    const parts = score.parts.filter((part) => !part.muted && (part.source === "human" || part.kept) && part.notes.length);
+    return parts.length ? { ...score, parts } : null;
+  }, [score]);
+  const scoreBeats = arrangementScore ? arrangementScore.bars * arrangementScore.beatsPerBar : 0;
+  const scoreSeconds = scoreBeats ? (scoreBeats * 60) / Math.max(20, bpm) : 0;
+  // Region positions are percentages of the audio timeline, so the score only sets the length when there is no audio.
+  const timelineDuration = getTimelineDuration(duration, audioClips, regions) || scoreSeconds;
   const timelineDurationMismatch = hasTimelineDurationMismatch(timelineDuration, audioClips, regions);
   const layoutKey = playbackLayoutKey(regions, audioClips, tracks, timelineDuration, uploadedAudioUrl);
   const previousLayoutRef = useRef(layoutKey);
   const hasPlayableAudio = roomHasPlayableAudio(uploadedAudioUrl, audioClips, regions);
+  const canPlay = hasPlayableAudio || scoreSeconds > 0;
   const referenceSuppressedBySolo = tracks.some((track) => track.solo);
 
   useEffect(() => {
@@ -278,7 +293,7 @@ export function ControlPanel({ readOnly = false, uploadedFileName, uploadedAudio
   };
 
   const startPlayback = async (fromTime: number) => {
-    if (!hasPlayableAudio || !timelineDuration) return false;
+    if (!canPlay || !timelineDuration) return false;
     const generation = ++playbackGenerationRef.current;
     setIsStartingPlayback(true);
     try {
@@ -311,11 +326,20 @@ export function ControlPanel({ readOnly = false, uploadedFileName, uploadedAudio
       if (generation !== playbackGenerationRef.current) return false;
       clockOriginRef.current = performance.now() - fromTime * 1000;
       setIsPlaying(true);
+      if (arrangementScore && fromTime < scoreSeconds) {
+        void playScore(arrangementScore, bpm, (fromTime * bpm) / 60, scoreBeats, false).catch(() => setPlaybackError("The score could not start. Click play again."));
+      } else {
+        stopScore();
+      }
       const tick = (now: number) => {
         if (generation !== playbackGenerationRef.current) return;
         const nextTime = Math.min(timelineDuration, Math.max(0, (now - clockOriginRef.current) / 1000));
         setCurrentTime(nextTime);
-        onPlayheadChange?.((nextTime / timelineDuration) * 100);
+        // The whole room re-renders on a playhead change, so report it about ten times a second, not every frame.
+        if (now - lastPlayheadReportRef.current >= 100 || nextTime >= timelineDuration) {
+          lastPlayheadReportRef.current = now;
+          onPlayheadChange?.((nextTime / timelineDuration) * 100);
+        }
         const loop = loopSettingsRef.current;
         const restartAt = getLoopRestartTime(nextTime, timelineDuration, loop.enabled, loop.start, loop.end);
         if (restartAt !== null) {
@@ -326,6 +350,7 @@ export function ControlPanel({ readOnly = false, uploadedFileName, uploadedAudio
           playbackGenerationRef.current += 1;
           setIsPlaying(false);
           stopClipPlayback();
+          stopScore();
           audioRef.current?.pause();
           animationFrameRef.current = null;
           return;
@@ -349,6 +374,7 @@ export function ControlPanel({ readOnly = false, uploadedFileName, uploadedAudio
     playbackGenerationRef.current += 1;
     audioRef.current?.pause();
     stopClipPlayback();
+    stopScore();
     if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     animationFrameRef.current = null;
     setIsPlaying(false);
@@ -364,7 +390,7 @@ export function ControlPanel({ readOnly = false, uploadedFileName, uploadedAudio
     if (previousLayoutRef.current === layoutKey) return;
     previousLayoutRef.current = layoutKey;
     if (isPlaying || isStartingPlayback) {
-      if (!hasPlayableAudio || !timelineDuration) pausePlayback();
+      if (!canPlay || !timelineDuration) pausePlayback();
       else void startPlayback(Math.min(currentTime, timelineDuration));
     }
     // Rebuild only when the playable layout changes, not on each playhead update.
@@ -422,7 +448,7 @@ export function ControlPanel({ readOnly = false, uploadedFileName, uploadedAudio
   }, [transportCommand?.id]);
 
   const exportMix = async () => {
-    if (!hasPlayableAudio || !timelineDuration || exportInProgressRef.current) return;
+    if (!canPlay || !timelineDuration || exportInProgressRef.current) return;
     exportInProgressRef.current = true;
     if (exportStatusTimerRef.current !== null) window.clearTimeout(exportStatusTimerRef.current);
     exportStatusTimerRef.current = null;
@@ -459,6 +485,10 @@ export function ControlPanel({ readOnly = false, uploadedFileName, uploadedAudio
         if (!response.ok) throw new Error("Could not load uploaded audio");
         const buffer = await context.decodeAudioData(await response.arrayBuffer());
         items.push({ buffer, start: 0, gain: 1, duration: buffer.duration, offset: 0 });
+      }
+      if (arrangementScore && !(hasSolo)) {
+        const scoreBuffer = await renderScore(arrangementScore, bpm);
+        if (scoreBuffer) items.push({ buffer: scoreBuffer, start: 0, gain: 1, duration: scoreBuffer.duration, offset: 0 });
       }
       if (!items.length) throw new Error("No audible clips to export");
       const sampleRate = 44100;
@@ -597,49 +627,58 @@ export function ControlPanel({ readOnly = false, uploadedFileName, uploadedAudio
     }
   };
 
-  const controlClass = "grid h-9 w-9 place-items-center rounded-[8px] bg-[#172033]/[0.055] text-[#172033]/65 transition hover:bg-[#172033]/10 disabled:cursor-not-allowed disabled:opacity-25";
+  const controlClass = "grid h-9 w-9 place-items-center rounded-full text-black transition-colors duration-150 ease-studio hover:bg-stone disabled:cursor-not-allowed disabled:opacity-25";
+  const chipClass = "flex h-9 items-center gap-1 rounded-full bg-cream px-3 font-mono text-[13px] text-black/70 outline-none transition-colors hover:bg-stone disabled:cursor-not-allowed";
+  const segmentClass = "inline-flex h-8 items-center gap-1.5 rounded-full px-3 transition-[background-color,box-shadow,color] duration-150 ease-studio disabled:opacity-30";
+  const segmentOn = "bg-white text-black shadow-ring";
+  const segmentOff = "text-ink-700 hover:text-black";
   return (
-    <div className="flex min-h-16 shrink-0 flex-wrap items-center gap-3 border-b border-[#18202a]/10 bg-[#f7f5f0] px-4 py-2 text-[#172033]">
+    <div className="flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-b border-stone bg-canvas px-4 py-2 text-black">
       <audio ref={audioRef} src={uploadedAudioUrl ?? undefined} preload="metadata" />
       {regions.map((region) => {
         const clip = audioClips.find((item) => item.id === region.clipId);
         return clip ? <audio key={region.id} ref={(element) => { if (element) clipAudioRefs.current.set(region.id, element); else clipAudioRefs.current.delete(region.id); }} src={`/api/rooms/${encodeURIComponent(roomId)}/clips/${encodeURIComponent(clip.id)}/audio`} preload="auto" /> : null;
       })}
-      {playbackError ? <div role="alert" className="w-full rounded-[6px] bg-[#fff0e9] px-3 py-2 text-xs text-[#8b2d20]">{playbackError}</div> : null}
-      {timelineDurationMismatch ? <div role="status" className="w-full rounded-[6px] bg-[#fff0e9] px-3 py-2 text-xs text-[#8b2d20]">{language === "zh" ? "部分片段的显示宽度与实际音频时长不一致。请以播放和导出结果为准，剪辑前先试听。" : "Some clip widths do not match their audio durations. Check playback before editing; exports use the actual audio duration."}</div> : null}
-      {recordingError ? <div role="alert" className="w-full rounded-[6px] bg-[#fff0e9] px-3 py-2 text-xs text-[#8b2d20]">{recordingError}</div> : null}
-      {recordingWarning ? <div role="status" className="w-full rounded-[6px] bg-[#fff0e9] px-3 py-2 text-xs text-[#8b2d20]">{displayRecordingSizeWarning(recordingWarning, language)}</div> : null}
-      {isStartingPlayback && !isPlaying ? <div role="status" className="w-full text-xs text-[#172033]/60">Preparing audio...</div> : null}
-      {exportError ? <div role="alert" className="w-full rounded-[6px] bg-[#fff0e9] px-3 py-2 text-xs text-[#8b2d20]">{exportError}</div> : null}
-      {exportWarning ? <div role="status" className="w-full rounded-[6px] bg-[#fff0e9] px-3 py-2 text-xs text-[#8b2d20]">{exportWarning}</div> : null}
-      {unsavedRecording && recordingStatus !== "uploading" ? <div role="alert" className="flex w-full flex-wrap items-center gap-2 rounded-[6px] bg-[#fff0e9] px-3 py-2 text-xs text-[#8b2d20]"><span>{recordingMustStop(unsavedRecording.file.size) ? (language === "zh" ? "录音超过上传上限，请下载保留。" : "Recording exceeds the upload limit. Download it to keep it.") : (language === "zh" ? "录音尚未保存。离开前请下载，或选择录音音轨后重试上传。" : "Recording not saved. Download it before leaving or retry using the selected recording track.")}</span><button type="button" disabled={readOnly || !recordingTrackId || recordingMustStop(unsavedRecording.file.size)} onClick={() => void saveRecording({ ...unsavedRecording, trackId: recordingTrackId })} className="font-semibold underline disabled:opacity-40">{language === "zh" ? "重试上传" : "Retry upload"}</button><button type="button" onClick={() => { const url = URL.createObjectURL(unsavedRecording.file); const link = document.createElement("a"); link.href = url; link.download = unsavedRecording.file.name; link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000); }} className="font-semibold underline">{language === "zh" ? "下载录音" : "Download recording"}</button><button type="button" onClick={() => { if (window.confirm(language === "zh" ? "确定丢弃这段未保存的录音吗？如需保留，请先下载。" : "Discard this unsaved recording? Download it first if you need to keep it.")) { setUnsavedRecording(null); setRecordingWarning(""); } }} className="font-semibold underline">{language === "zh" ? "丢弃" : "Discard"}</button></div> : null}
+      {playbackError ? <div role="alert" className="w-full rounded-xl bg-copilot-wash px-3 py-2 text-[13px] text-copilot-ink">{playbackError}</div> : null}
+      {timelineDurationMismatch ? <div role="status" className="w-full rounded-xl bg-copilot-wash px-3 py-2 text-[13px] text-copilot-ink">{language === "zh" ? "部分片段的显示宽度与实际音频时长不一致。请以播放和导出结果为准，剪辑前先试听。" : tr("Some clip widths do not match their audio durations. Check playback before editing; exports use the actual audio duration.")}</div> : null}
+      {recordingError ? <div role="alert" className="w-full rounded-xl bg-copilot-wash px-3 py-2 text-[13px] text-copilot-ink">{recordingError}</div> : null}
+      {recordingWarning ? <div role="status" className="w-full rounded-xl bg-copilot-wash px-3 py-2 text-[13px] text-copilot-ink">{displayRecordingSizeWarning(recordingWarning, language)}</div> : null}
+      {isStartingPlayback && !isPlaying ? <div role="status" className="w-full text-xs text-ink-700">{tr("Preparing audio...")}</div> : null}
+      {exportError ? <div role="alert" className="w-full rounded-xl bg-copilot-wash px-3 py-2 text-[13px] text-copilot-ink">{exportError}</div> : null}
+      {exportWarning ? <div role="status" className="w-full rounded-xl bg-copilot-wash px-3 py-2 text-[13px] text-copilot-ink">{exportWarning}</div> : null}
+      {unsavedRecording && recordingStatus !== "uploading" ? <div role="alert" className="flex w-full flex-wrap items-center gap-2 rounded-xl bg-copilot-wash px-3 py-2 text-[13px] text-copilot-ink"><span>{recordingMustStop(unsavedRecording.file.size) ? (language === "zh" ? "录音超过上传上限，请下载保留。" : tr("Recording exceeds the upload limit. Download it to keep it.")) : (language === "zh" ? "录音尚未保存。离开前请下载，或选择录音音轨后重试上传。" : tr("Recording not saved. Download it before leaving or retry using the selected recording track."))}</span><button type="button" disabled={readOnly || !recordingTrackId || recordingMustStop(unsavedRecording.file.size)} onClick={() => void saveRecording({ ...unsavedRecording, trackId: recordingTrackId })} className="font-medium underline disabled:opacity-40">{language === "zh" ? "重试上传" : tr("Retry upload")}</button><button type="button" onClick={() => { const url = URL.createObjectURL(unsavedRecording.file); const link = document.createElement("a"); link.href = url; link.download = unsavedRecording.file.name; link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000); }} className="font-medium underline">{language === "zh" ? "下载录音" : tr("Download recording")}</button><button type="button" onClick={() => { if (window.confirm(language === "zh" ? "确定丢弃这段未保存的录音吗？如需保留，请先下载。" : tr("Discard this unsaved recording? Download it first if you need to keep it."))) { setUnsavedRecording(null); setRecordingWarning(""); } }} className="font-medium underline">{language === "zh" ? "丢弃" : tr("Discard")}</button></div> : null}
+      <div className="flex items-center gap-1 rounded-full bg-cream p-1">
+        <button className={controlClass} title={tr("Skip back 10 seconds")} aria-label={tr("Skip back 10 seconds")} disabled={!canPlay} onClick={() => seekBy(-10)}><SkipBack className="h-4 w-4" /></button>
+        {isPlaying || isStartingPlayback ? (
+          <button className="grid h-10 w-10 place-items-center rounded-full bg-black text-white transition-colors duration-150 ease-studio hover:bg-ink-700" title={tr("Pause")} aria-label={tr("Pause")} onClick={pause}><Pause className="h-4 w-4 fill-current" /></button>
+        ) : (
+          <button className="grid h-10 w-10 place-items-center rounded-full bg-black text-white transition-colors duration-150 ease-studio hover:bg-ink-700 disabled:opacity-30" title={tr("Play")} aria-label={tr("Play")} disabled={!canPlay} onClick={() => void play()}><Play className="ml-0.5 h-4 w-4 fill-current" /></button>
+        )}
+        <button className={controlClass} title={tr("Skip forward 10 seconds")} aria-label={tr("Skip forward 10 seconds")} disabled={!canPlay} onClick={() => seekBy(10)}><SkipForward className="h-4 w-4" /></button>
+        <div className="min-w-[104px] px-2 font-mono text-[13px] leading-tight"><span>{formatTime(currentTime)}</span><span className="text-ink-600"> / {formatTime(timelineDuration)}</span></div>
+        <input type="range" min="0" max={Math.max(timelineDuration,0.01)} step="0.01" value={Math.min(currentTime,Math.max(timelineDuration,0.01))} disabled={!canPlay||timelineDuration<=0} onChange={(event)=>seekTo(Number(event.target.value))} className="mr-2 hidden h-1 w-28 accent-black disabled:opacity-25 xl:block" aria-label={tr("Audio playback position")} />
+      </div>
       <div className="flex items-center gap-1.5">
-        <button className={controlClass} title="Skip back 10 seconds" disabled={!hasPlayableAudio} onClick={() => seekBy(-10)}><SkipBack className="h-4 w-4" /></button>
-        <button className="grid h-10 w-12 place-items-center rounded-[8px] bg-[#184eb6] text-white transition hover:bg-[#123f91] disabled:opacity-30" title="Play" disabled={!hasPlayableAudio || isPlaying || isStartingPlayback} onClick={() => void play()}><Play className="h-5 w-5 fill-current" /></button>
-        <button className={controlClass} title="Pause" disabled={!hasPlayableAudio || (!isPlaying && !isStartingPlayback)} onClick={pause}><Pause className="h-4 w-4" /></button>
-        <button className={controlClass} title="Skip forward 10 seconds" disabled={!hasPlayableAudio} onClick={() => seekBy(10)}><SkipForward className="h-4 w-4" /></button>
+        <label className={chipClass}><input type="number" min="40" max="220" value={tempoDraft} disabled={readOnly} onFocus={() => { tempoEditingRef.current = true; tempoInitialDraftRef.current = tempoDraft; }} onChange={(event) => setTempoDraft(event.target.value)} onBlur={() => { tempoEditingRef.current = false; const nextBpm = resolveTempoEdit(tempoDraft, tempoInitialDraftRef.current, bpm); setTempoDraft(String(nextBpm)); if (!readOnly && nextBpm !== bpm) onSessionSettingsChange({ bpm: nextBpm, timeSignature }); }} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} className="w-9 bg-transparent text-right text-black outline-none" aria-label={tr("Tempo BPM")} />BPM</label>
+        <select value={timeSignature} disabled={readOnly} onChange={(event) => onSessionSettingsChange({ bpm, timeSignature: event.target.value })} className={`${chipClass} cursor-pointer appearance-none`} aria-label={tr("Time signature")}><option>4/4</option><option>3/4</option><option>6/8</option></select>
+        <select value={snapMode} onChange={(event) => onSnapModeChange(event.target.value as "Bar" | "Beat" | "Off")} className={`${chipClass} cursor-pointer appearance-none`} aria-label={tr("Timeline snap")}><option value="Bar">{tr("Snap bar")}</option><option value="Beat">{tr("Snap beat")}</option><option value="Off">{tr("Snap off")}</option></select>
       </div>
-      <div className="min-w-[120px] text-sm font-semibold tabular-nums">{formatTime(currentTime)} <span className="font-normal text-[#172033]/36">/ {formatTime(timelineDuration)}</span></div>
-      <div className="hidden h-8 w-px bg-[#18202a]/10 md:block" />
-      <label className="flex items-center gap-1 rounded-[8px] border border-[#18202a]/10 bg-white/40 px-2 py-1.5 text-xs font-medium"><input type="number" min="40" max="220" value={tempoDraft} disabled={readOnly} onFocus={() => { tempoEditingRef.current = true; tempoInitialDraftRef.current = tempoDraft; }} onChange={(event) => setTempoDraft(event.target.value)} onBlur={() => { tempoEditingRef.current = false; const nextBpm = resolveTempoEdit(tempoDraft, tempoInitialDraftRef.current, bpm); setTempoDraft(String(nextBpm)); if (!readOnly && nextBpm !== bpm) onSessionSettingsChange({ bpm: nextBpm, timeSignature }); }} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} className="w-10 bg-transparent text-right outline-none" aria-label="Tempo BPM" /> BPM</label>
-      <select value={timeSignature} disabled={readOnly} onChange={(event) => onSessionSettingsChange({ bpm, timeSignature: event.target.value })} className="rounded-[8px] border border-[#18202a]/10 bg-white/40 px-2 py-2 text-xs font-medium" aria-label="Time signature"><option>4/4</option><option>3/4</option><option>6/8</option></select>
-      <select value={snapMode} onChange={(event) => onSnapModeChange(event.target.value as "Bar" | "Beat" | "Off")} className="rounded-[8px] border border-[#18202a]/10 bg-white/40 px-2 py-2 text-xs font-medium" aria-label="Timeline snap"><option value="Bar">Snap: Bar</option><option value="Beat">Snap: Beat</option><option value="Off">Snap: Off</option></select>
-      <button type="button" onClick={() => setMetronomeOn((value) => !value)} className={`inline-flex items-center gap-1.5 rounded-[8px] border px-3 py-2 text-xs font-semibold transition ${metronomeOn ? "border-[#184eb6]/25 bg-[#184eb6] text-white" : "border-[#18202a]/10 bg-white/40 text-[#172033]/65"}`} title="Toggle audible metronome"><AudioWaveform className="h-3.5 w-3.5" />{metronomeOn ? "Click on" : "Metronome"}</button>
-      <div className="flex items-center rounded-[8px] border border-[#18202a]/10 bg-white/40 p-0.5 text-[11px] font-semibold">
-        <button type="button" disabled={!hasPlayableAudio} onClick={() => { setLoopStart(currentTime); if (loopEnd <= currentTime) setLoopEnd(Math.min(timelineDuration, currentTime + 4)); }} className="rounded-[6px] px-2 py-1.5 disabled:opacity-30" title="Set loop start at playhead">In</button>
-        <button type="button" disabled={!hasPlayableAudio} onClick={() => setLoopEnd(Math.max(currentTime, loopStart + 0.1))} className="rounded-[6px] px-2 py-1.5 disabled:opacity-30" title="Set loop end at playhead">Out</button>
-        <button type="button" disabled={!hasPlayableAudio} onClick={() => { if (!loopEnd) setLoopEnd(timelineDuration); setLoopEnabled((value) => !value); }} className={`rounded-[6px] px-2 py-1.5 transition disabled:opacity-30 ${loopEnabled ? "bg-[#184eb6] text-white" : "text-[#172033]/60"}`} title="Toggle loop playback">Loop</button>
+      <div className="flex items-center gap-0.5 rounded-full bg-cream p-[3px] text-[13px]">
+        <button type="button" onClick={() => setMetronomeOn((value) => !value)} aria-pressed={metronomeOn} className={`${segmentClass} ${metronomeOn ? segmentOn : segmentOff}`} title={tr("Toggle audible metronome")}><AudioWaveform className="h-3.5 w-3.5" />{tr("Click")}</button>
+        <button type="button" disabled={!canPlay} onClick={() => { setLoopStart(currentTime); if (loopEnd <= currentTime) setLoopEnd(Math.min(timelineDuration, currentTime + 4)); }} className={`${segmentClass} ${segmentOff}`} title={tr("Set loop start at playhead")}>{tr("In")}</button>
+        <button type="button" disabled={!canPlay} onClick={() => setLoopEnd(Math.max(currentTime, loopStart + 0.1))} className={`${segmentClass} ${segmentOff}`} title={tr("Set loop end at playhead")}>{tr("Out")}</button>
+        <button type="button" disabled={!canPlay} aria-pressed={loopEnabled} onClick={() => { if (!loopEnd) setLoopEnd(timelineDuration); setLoopEnabled((value) => !value); }} className={`${segmentClass} ${loopEnabled ? segmentOn : segmentOff}`} title={tr("Toggle loop playback")}>{tr("Loop")}</button>
       </div>
-      <div className="ml-auto hidden min-w-[180px] items-center gap-2 lg:flex">
-        <input type="range" min="0" max={Math.max(timelineDuration,0.01)} step="0.01" value={Math.min(currentTime,Math.max(timelineDuration,0.01))} disabled={!hasPlayableAudio||timelineDuration<=0} onChange={(event)=>seekTo(Number(event.target.value))} className="h-1 flex-1 accent-[#184eb6] disabled:opacity-25" aria-label="Audio playback position" />
+      <div className="ml-auto flex flex-wrap items-center gap-2">
+        {uploadedAudioUrl ? <button type="button" disabled={readOnly} onClick={() => onReferenceMuteChange(!referenceMuted)} aria-pressed={referenceMuted} aria-label={referenceMuted ? tr("Unmute reference audio") : tr("Mute reference audio")} title={referenceSuppressedBySolo && !referenceMuted ? `Reference is silent while a track is soloed: ${uploadedFileName}` : `${referenceMuted ? tr("Unmute") : tr("Mute")} reference: ${uploadedFileName}`} className={`inline-flex h-9 items-center gap-1.5 rounded-full px-3 text-[13px] transition-colors disabled:opacity-50 ${referenceMuted ? "bg-black text-white" : "bg-cream text-ink-700 hover:bg-stone"}`}>{referenceMuted || referenceSuppressedBySolo ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}{referenceSuppressedBySolo && !referenceMuted ? tr("Reference (solo)") : tr("Reference")}</button> : null}
+        {onRecordedClip ? <div className="flex h-9 items-center rounded-full bg-white pl-1 shadow-ring">
+          <select value={recordingTrackId} disabled={readOnly || recordingStatus === "recording" || recordingStatus === "requesting"} onChange={(event) => setRecordingTrackId(event.target.value)} className="max-w-[124px] cursor-pointer truncate bg-transparent pl-2.5 pr-1 text-[13px] text-ink-700 outline-none" aria-label={tr("Recording target track")}>{tracks.map((track) => <option key={track.id} value={track.id}>{track.name}</option>)}</select>
+          <span className="h-5 w-px bg-stone" aria-hidden="true" />
+          <button type="button" onClick={recordingStatus === "recording" ? stopRecording : () => void startRecording()} disabled={recordingButtonDisabled(recordingStatus, readOnly, !!recordingTrackId, !!unsavedRecording)} className={`inline-flex h-9 items-center gap-1.5 rounded-full px-3 text-sm transition-colors disabled:opacity-40 ${recordingStatus === "recording" ? "bg-[#b42318] text-white" : "text-black hover:bg-cream"}`} title={recordingStatus === "recording" ? tr("Stop recording") : tr("Record microphone to selected track")}><Circle className={`h-3 w-3 ${recordingStatus === "recording" ? "fill-white text-white" : "fill-[#b42318] text-[#b42318]"}`} />{recordingStatus === "requesting" ? tr("Mic…") : recordingStatus === "uploading" ? tr("Saving…") : recordingStatus === "recording" ? `Stop ${formatTime(recordingSeconds)}` : recordingStatus === "error" ? tr("Mic blocked") : tr("Record")}</button>
+        </div> : null}
+        <label className={`inline-flex h-9 items-center gap-2 rounded-full bg-white px-3.5 text-sm shadow-ring transition-colors ${readOnly ? "cursor-not-allowed opacity-40" : "cursor-pointer hover:bg-cream"}`}><Upload className="h-4 w-4" />{tr("Import audio")}<input className="sr-only" type="file" accept="audio/*" disabled={readOnly} onChange={(event)=>{const file=event.target.files?.[0];if(file)onAudioUpload(file);event.target.value="";}} /></label>
+        <button type="button" onClick={() => void exportMix()} disabled={!canPlay || exportStatus === "exporting"} className="inline-flex h-9 items-center gap-2 rounded-full bg-black px-3.5 text-sm text-white transition-colors hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-35" title={tr("Export the audible timeline as WAV")}><Download className="h-4 w-4" />{exportStatus === "exporting" ? tr("Mixing…") : exportStatus === "done" ? tr("Exported") : exportStatus === "error" ? tr("Export failed") : tr("Export WAV")}</button>
       </div>
-      {uploadedAudioUrl ? <button type="button" disabled={readOnly} onClick={() => onReferenceMuteChange(!referenceMuted)} aria-pressed={referenceMuted} aria-label={referenceMuted ? "Unmute reference audio" : "Mute reference audio"} title={referenceSuppressedBySolo && !referenceMuted ? `Reference is silent while a track is soloed: ${uploadedFileName}` : `${referenceMuted ? "Unmute" : "Mute"} reference: ${uploadedFileName}`} className={`inline-flex items-center gap-1 rounded-[6px] px-2 py-1.5 text-[11px] disabled:opacity-50 ${referenceMuted ? "bg-[#184eb6] text-white" : "bg-[#18202a]/5 text-[#172033]/70"}`}>{referenceMuted || referenceSuppressedBySolo ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}{referenceSuppressedBySolo && !referenceMuted ? "Reference (solo)" : "Reference"}</button> : null}
-      <button type="button" onClick={() => void exportMix()} disabled={!hasPlayableAudio || exportStatus === "exporting"} className="inline-flex items-center gap-2 rounded-[9px] border border-[#18202a]/14 bg-white/55 px-3 py-2 text-xs font-semibold transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-35" title="Export the audible timeline as WAV"><Download className="h-4 w-4" />{exportStatus === "exporting" ? "Mixing…" : exportStatus === "done" ? "Exported" : exportStatus === "error" ? "Export failed" : "Export WAV"}</button>
-      {onRecordedClip ? <div className="flex items-center rounded-[9px] border border-[#18202a]/14 bg-white/55 p-0.5">
-        <select value={recordingTrackId} disabled={readOnly || recordingStatus === "recording" || recordingStatus === "requesting"} onChange={(event) => setRecordingTrackId(event.target.value)} className="max-w-[120px] bg-transparent px-2 py-1.5 text-[11px] outline-none" aria-label="Recording target track">{tracks.map((track) => <option key={track.id} value={track.id}>{track.name}</option>)}</select>
-        <button type="button" onClick={recordingStatus === "recording" ? stopRecording : () => void startRecording()} disabled={recordingButtonDisabled(recordingStatus, readOnly, !!recordingTrackId, !!unsavedRecording)} className={`inline-flex items-center gap-1.5 rounded-[7px] px-3 py-1.5 text-xs font-semibold transition disabled:opacity-40 ${recordingStatus === "recording" ? "bg-[#b42318] text-white" : "text-[#7f1d1d] hover:bg-[#b42318]/8"}`} title={recordingStatus === "recording" ? "Stop recording" : "Record microphone to selected track"}><Circle className={`h-3.5 w-3.5 ${recordingStatus === "recording" ? "fill-white" : "fill-[#b42318] text-[#b42318]"}`} />{recordingStatus === "requesting" ? "Mic…" : recordingStatus === "uploading" ? "Saving…" : recordingStatus === "recording" ? `Stop ${formatTime(recordingSeconds)}` : recordingStatus === "error" ? "Mic blocked" : "Record"}</button>
-      </div> : null}
-      <label className={`inline-flex items-center gap-2 rounded-[9px] border border-[#18202a]/14 bg-white/55 px-4 py-2 text-xs font-semibold transition ${readOnly ? "cursor-not-allowed opacity-40" : "cursor-pointer hover:bg-white"}`}><Upload className="h-4 w-4" />Upload audio<input className="sr-only" type="file" accept="audio/*" disabled={readOnly} onChange={(event)=>{const file=event.target.files?.[0];if(file)onAudioUpload(file);event.target.value="";}} /></label>
     </div>
   );
 }
