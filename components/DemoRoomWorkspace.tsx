@@ -116,6 +116,7 @@ type RoomSocket = Socket<
       roomId: string;
       arrangementEpoch: number;
       composition: MusicComposition;
+      previousScore?: Score | null;
       event: RoomEvent;
     }) => void;
     "room:clips": (payload: { roomId: string; audioClips: AudioClip[]; event?: RoomEvent }) => void;
@@ -984,13 +985,13 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     if (socketRef.current?.connected) {
       pendingEditsRef.current.add(`composition:${event.id}`);
       setEditSaveState("saving");
-      socketRef.current.emit("room:composition", { roomId, arrangementEpoch: arrangementEpochRef.current, composition: nextComposition, event });
+      socketRef.current.emit("room:composition", { roomId, arrangementEpoch: arrangementEpochRef.current, composition: nextComposition, previousScore: composition?.score ?? null, event });
       setSyncStatus("Saving melody edit");
       return;
     }
 
     void persistRoomChanges(
-      { url: `/api/rooms/${encodeURIComponent(roomId)}`, init: { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ composition: nextComposition, arrangementEpoch: arrangementEpochRef.current }) } },
+      { url: `/api/rooms/${encodeURIComponent(roomId)}`, init: { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ composition: nextComposition, previousScore: composition?.score ?? null, arrangementEpoch: arrangementEpochRef.current }) } },
       { url: `/api/rooms/${encodeURIComponent(roomId)}/events`, init: { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event }) } },
     );
   };
@@ -1005,12 +1006,12 @@ export function DemoRoomWorkspace({ roomId = "demo", initialTitle = "Always sess
     if (socketRef.current?.connected) {
       pendingEditsRef.current.add(`composition:${event.id}`);
       setEditSaveState("saving");
-      socketRef.current.emit("room:composition", { roomId, arrangementEpoch: arrangementEpochRef.current, composition: nextComposition, event });
+      socketRef.current.emit("room:composition", { roomId, arrangementEpoch: arrangementEpochRef.current, composition: nextComposition, previousScore: composition?.score ?? null, event });
       setSyncStatus("Saving score");
       return;
     }
     void persistRoomChanges(
-      { url: `/api/rooms/${encodeURIComponent(roomId)}`, init: { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ composition: nextComposition, arrangementEpoch: arrangementEpochRef.current }) } },
+      { url: `/api/rooms/${encodeURIComponent(roomId)}`, init: { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ composition: nextComposition, previousScore: composition?.score ?? null, arrangementEpoch: arrangementEpochRef.current }) } },
       { url: `/api/rooms/${encodeURIComponent(roomId)}/events`, init: { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event }) } },
     );
   };

@@ -1,5 +1,6 @@
 // Plays a note score in the browser with Tone.js synths (no samples to download).
 import type { PartRole, Score } from "@/lib/score.mjs";
+import { scoreNoteRange } from "@/lib/score-playback-range.mjs";
 
 type ToneModule = typeof import("tone");
 type Voice = { trigger: (midi: number, duration: number, time: number, velocity: number) => void; volume: { value: number }; dispose: () => void };
@@ -76,9 +77,10 @@ export async function playScore(score: Score, bpm: number, fromBeat: number, toB
     const voice = voiceFor(Tone, part.id, part.role);
     voice.volume.value = (part.role === "pad" ? -14 : part.role === "drums" ? -6 : -9) + 20 * Math.log10(Math.max(0.01, part.volume));
     for (const note of part.notes) {
-      if (note.start < fromBeat || note.start >= toBeat) continue;
-      const offset = (note.start - fromBeat) * secondsPerBeat;
-      const duration = Math.max(0.05, note.duration * secondsPerBeat);
+      const range = scoreNoteRange(note, fromBeat, toBeat);
+      if (!range) continue;
+      const offset = range.offset * secondsPerBeat;
+      const duration = Math.max(0.05, range.duration * secondsPerBeat);
       transport.schedule((time) => voice.trigger(note.midi, duration, time, note.velocity), offset);
     }
   }

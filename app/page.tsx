@@ -103,13 +103,13 @@ function SectionHeading({ id, title, children }: { id: SectionId; title: string;
   const { t } = useLanguage();
   const section = SECTIONS.find((item) => item.id === id)!;
   return (
-    <div className="grid gap-x-8 gap-y-3 lg:grid-cols-[112px_minmax(0,1fr)_minmax(0,420px)] lg:items-end">
-      <p className="flex items-baseline gap-2 font-mono text-[13px] text-smoke lg:flex-col lg:gap-0.5 lg:self-start lg:pt-3">
+    <div className="grid items-start gap-x-8 gap-y-3 lg:grid-cols-[112px_minmax(0,1fr)_minmax(0,420px)]">
+      <p className="flex items-baseline gap-2 font-mono text-[13px] text-smoke lg:flex-col lg:gap-0.5 lg:pt-1">
         <span className="text-black">{section.bars.slice(0, 2)}</span>
         <span>{t(section.label)}</span>
       </p>
       <h2 className="max-w-[15em] text-balance font-display text-[32px] font-light leading-[1.12] tracking-[-0.02em] sm:text-[40px]">{title}</h2>
-      {children ? <div className="text-base text-ink-700 lg:pb-1.5">{children}</div> : null}
+      {children ? <div className="text-base text-ink-700 lg:pt-1">{children}</div> : null}
     </div>
   );
 }
@@ -261,7 +261,7 @@ export default function Home() {
 
       <header id="intro" className="mx-auto grid max-w-[1280px] items-center gap-12 px-5 pb-24 pt-14 sm:px-8 lg:grid-cols-[minmax(0,1fr)_440px] lg:gap-16 lg:pt-20">
         <div className="flex flex-col gap-7">
-          <h1 className="max-w-[10em] text-balance font-display text-[44px] font-light leading-[1.04] tracking-[-0.025em] sm:text-[64px]">
+          <h1 className="font-display text-[32px] font-light leading-[1.1] sm:text-[40px] lg:whitespace-nowrap">
             {t("home.title1")} <em className={cn("font-light", /^(zh|ja|ko)/.test(language) && "not-italic")}>{t("home.title2")}</em>
           </h1>
           <p className="max-w-[52ch] text-lg leading-[1.44] text-ink-700">{t("home.lede")}</p>

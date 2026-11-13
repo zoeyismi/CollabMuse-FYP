@@ -21,6 +21,7 @@ import { readBinaryRequest } from "./lib/binary-request.mjs";
 import { validateTimingPatch } from "./lib/session-timing.mjs";
 import { referenceTempo } from "./lib/reference-tempo.mjs";
 import { sanitizeScore } from "./lib/score.mjs";
+import { mergeScore } from "./lib/merge-score.mjs";
 
 const dev = process.env.NODE_ENV !== "production";
 const hostname = process.env.HOSTNAME_BIND || "0.0.0.0";
@@ -62,6 +63,20 @@ function cleanComposition(composition) {
   if (composition.score === undefined || composition.score === null) return composition;
   const score = sanitizeScore(composition.score);
   return score ? { ...composition, score } : null;
+}
+
+function mergeComposition(current, incoming, previousScore, hasPreviousScore) {
+  if (!incoming) {
+    if (current?.score) throw Object.assign(new Error("The score cannot be removed by this operation."), { statusCode: 409 });
+    return incoming;
+  }
+  if (!Object.hasOwn(incoming, "score")) return current?.score ? { ...incoming, score: current.score } : incoming;
+  if (!hasPreviousScore) throw Object.assign(new Error("The score edit is missing its original version. Reload and try again."), { statusCode: 409 });
+  const score = mergeScore(previousScore ?? null, current?.score ?? null, incoming.score ?? null);
+  if (!score) return { ...incoming, score: null };
+  const clean = sanitizeScore(score);
+  if (!clean || clean.parts.length !== score.parts.length || clean.parts.some((part, i) => part.notes.length !== score.parts[i].notes.length)) throw Object.assign(new Error("The merged score exceeds its limits. Your edit was not saved."), { statusCode: 409 });
+  return { ...incoming, key: clean.key, score: clean };
 }
 const compositionPitches = [
   "C3", "C#3", "D3", "D#3", "E3", "F3", "F#3", "G3", "G#3", "A3", "A#3", "B3",
@@ -1824,7 +1839,7 @@ async function handleApi(req, res, pathname) {
       return true;
     }
     const body = await readBody(req);
-    const allowed = new Set(["title", "bpm", "timeSignature", "composition", "arrangementEpoch"]);
+    const allowed = new Set(["title", "bpm", "timeSignature", "composition", "arrangementEpoch", "previousScore"]);
     if (Object.keys(body).some((key) => !allowed.has(key))) {
       sendJson(res, 400, { error: "This room setting cannot be changed here." });
       return true;
@@ -1840,7 +1855,8 @@ async function handleApi(req, res, pathname) {
     }
     const room = await ensureRoom(roomMatch[1], (current) => {
       if (["composition", "bpm", "timeSignature"].some((key) => Object.hasOwn(body, key))) assertArrangementEpoch(current, body.arrangementEpoch);
-      const { arrangementEpoch: _epoch, ...patch } = body;
+      const { arrangementEpoch: _epoch, previousScore: _previousScore, ...patch } = body;
+      if (Object.hasOwn(patch, "composition")) patch.composition = mergeComposition(current.composition, patch.composition, body.previousScore, Object.hasOwn(body, "previousScore"));
       return patch;
     });
     sendJson(res, 200, { room: publicRoom(room) });
@@ -2123,7 +2139,7 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("room:composition", ({ roomId = "demo", composition: rawComposition, event, arrangementEpoch }) => {
+  socket.on("room:composition", ({ roomId = "demo", composition: rawComposition, event, arrangementEpoch, previousScore }) => {
     const composition = cleanComposition(rawComposition);
     if (!composition) {
       socket.emit("room:sync-error", { message: "Those composition changes were not valid and were not saved." });
@@ -2132,7 +2148,7 @@ io.on("connection", (socket) => {
     void queueRoomEdit(roomId, async () => {
       try {
         if (!(await mayEdit(roomId))) throw new Error("Editing access is no longer available");
-        const room = await ensureRoom(roomId, (current) => { assertArrangementEpoch(current, arrangementEpoch); return { composition, ...(event ? { events: eventsWithEvent(current.events ?? [], event) } : {}) }; });
+        const room = await ensureRoom(roomId, (current) => { assertArrangementEpoch(current, arrangementEpoch); return { composition: mergeComposition(current.composition, composition, previousScore, previousScore !== undefined), ...(event ? { events: eventsWithEvent(current.events ?? [], event) } : {}) }; });
         io.to(roomId).emit("room:composition", { arrangementEpoch: room.arrangementEpoch ?? 0, composition: room.composition, event });
       } catch (error) {
         socket.emit("room:sync-error", { message: error.statusCode === 409 ? error.message : "Could not save composition changes. Reloading the saved room." });
